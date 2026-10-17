@@ -1,0 +1,12 @@
+// Program 6: Semantic Diagnostics & Error Checker Demo
+// Shows how compiler design catches semantic errors before runtime:
+
+// 1. Duplicate variable declaration in same scope:
+make balance = 500;
+make balance = 1000;
+
+// 2. Undeclared assignment:
+missingScore = 95;
+
+// 3. Undefined identifier reference:
+say(unregisteredVariable);

@@ -1,0 +1,1817 @@
+import {
+  createConnection,
+  ProposedFeatures,
+  TextDocuments,
+  TextDocumentSyncKind,
+  InitializeParams,
+  InitializeResult,
+  Diagnostic,
+  DiagnosticSeverity,
+  TextDocumentChangeEvent,
+  CompletionItem,
+  CompletionItemKind,
+  Hover,
+  MarkupKind,
+  TextDocumentPositionParams,
+  DefinitionParams,
+  Location,
+  Range,
+  Position,
+  TextEdit,
+  DocumentFormattingParams,
+  RenameParams,
+  WorkspaceEdit,
+  ReferenceParams,
+  SemanticTokens,
+  CodeAction,
+  CodeActionKind,
+  SemanticTokensParams,
+  SignatureHelp,
+  SignatureInformation,
+  ParameterInformation,
+  DocumentSymbol,
+  SymbolKind,
+  DocumentSymbolParams,
+  InsertTextFormat,
+} from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
+import { createHash } from 'crypto';
+import { Lexer } from '@lexer/lexer';
+import { Parser } from '@parser/parser';
+import { KEYWORDS } from '@language/keywords';
+import { Program, Statement, Expression, FunctionDeclaration, VariableDeclaration, ClassDeclaration } from '@ast/nodes';
+import { typeCheck, TypeDiagnostic } from '@compiler/type-checker';
+
+const connection = createConnection(ProposedFeatures.all);
+const documents = new TextDocuments(TextDocument);
+
+// Cache per document URI to avoid repeated parse/type work
+interface DocCacheEntry {
+  version: number;
+  textHash: string;
+  ast?: Program;
+  symbols?: DocSymbol[];
+  diagnostics?: Diagnostic[];
+  lastAccess: number;
+}
+
+const docCache = new Map<string, DocCacheEntry>();
+const validationTimers = new Map<string, NodeJS.Timeout>();
+const validationQueue: string[] = [];
+let activeValidations = 0;
+const MAX_CONCURRENT_VALIDATIONS = 2;
+
+function computeHash(text: string): string {
+  return createHash('md5').update(text).digest('hex');
+}
+
+function getOrInitEntry(uri: string): DocCacheEntry {
+  let entry = docCache.get(uri);
+  if (!entry) {
+    entry = { version: -1, textHash: '', lastAccess: Date.now() };
+    docCache.set(uri, entry);
+  }
+  entry.lastAccess = Date.now();
+  return entry;
+}
+
+function scheduleValidation(doc: TextDocument): void {
+  const existing = validationTimers.get(doc.uri);
+  if (existing) clearTimeout(existing);
+  validationTimers.set(doc.uri, setTimeout(() => enqueueValidation(doc.uri), 300));
+}
+
+function enqueueValidation(uri: string): void {
+  validationQueue.push(uri);
+  pumpValidationQueue();
+}
+
+function pumpValidationQueue(): void {
+  while (activeValidations < MAX_CONCURRENT_VALIDATIONS && validationQueue.length > 0) {
+    const uri = validationQueue.shift();
+    if (!uri) break;
+    const doc = documents.get(uri);
+    if (!doc) continue;
+
+    activeValidations++;
+    // Offload heavy work so we don't block the LSP event loop
+    setTimeout(() => {
+      try {
+        validateDocument(doc);
+      } finally {
+        activeValidations--;
+        pumpValidationQueue();
+      }
+    }, 0);
+  }
+}
+
+// Periodic cache pruning to control memory
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000; // 10 minutes
+  for (const [uri, entry] of docCache.entries()) {
+    if (entry.lastAccess < cutoff) {
+      docCache.delete(uri);
+      validationTimers.delete(uri);
+    }
+  }
+}, 5 * 60 * 1000); // check every 5 minutes
+
+// ── Initialization ──────────────────────────────────────────────────
+
+connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  return {
+    capabilities: {
+      textDocumentSync: TextDocumentSyncKind.Incremental,
+      hoverProvider: true,
+      completionProvider: {
+        triggerCharacters: ['.', '(', '{', '['],
+        resolveProvider: false
+      },
+      definitionProvider: true,
+      documentFormattingProvider: true,
+      signatureHelpProvider: {
+        triggerCharacters: ['(', ',']
+      },
+      documentSymbolProvider: true,
+      codeActionProvider: true,
+      renameProvider: { prepareProvider: false },
+      referencesProvider: true,
+      semanticTokensProvider: {
+        legend: {
+          tokenTypes: [
+            'function', 'variable', 'class', 'parameter', 'keyword',
+            'string', 'number', 'comment', 'operator', 'type',
+            'enum', 'interface', 'property', 'method', 'namespace',
+            'enumMember', 'typeParameter', 'decorator'
+          ],
+          tokenModifiers: [
+            'declaration', 'readonly', 'async', 'static',
+            'defaultLibrary', 'modification', 'definition'
+          ]
+        },
+        full: true
+      }
+    }
+  };
+});
+
+// ── Diagnostics ─────────────────────────────────────────────────────
+
+documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => {
+  scheduleValidation(change.document);
+});
+
+function validateDocument(doc: TextDocument): void {
+  const source = doc.getText();
+  const hash = computeHash(source);
+  const entry = getOrInitEntry(doc.uri);
+
+  if (entry.textHash === hash && entry.diagnostics) {
+    connection.sendDiagnostics({ uri: doc.uri, diagnostics: entry.diagnostics });
+    return;
+  }
+
+  const diagnostics: Diagnostic[] = [];
+
+  if (source.trim().length === 0) {
+    entry.version = doc.version;
+    entry.textHash = hash;
+    entry.ast = undefined;
+    entry.symbols = [];
+    entry.diagnostics = diagnostics;
+    connection.sendDiagnostics({ uri: doc.uri, diagnostics });
+    return;
+  }
+
+  try {
+    const tokens = new Lexer(source).tokenize();
+    const parser = new Parser(tokens);
+    const ast = parser.parseProgram();
+
+    // Report recovered parse errors (error-tolerant parsing)
+    for (const err of parser.errors) {
+      const msg = err.message || String(err);
+      const match = msg.match(/at (\d+):(\d+)$/);
+      let range: Range;
+      if (match) {
+        const line = parseInt(match[1], 10) - 1;
+        const col = parseInt(match[2], 10) - 1;
+        const lineText = source.split('\n')[line] || '';
+        range = Range.create(Position.create(line, col), Position.create(line, lineText.length));
+      } else {
+        range = Range.create(Position.create(0, 0), Position.create(0, 0));
+      }
+      diagnostics.push({
+        severity: DiagnosticSeverity.Error,
+        range,
+        message: msg.replace(/\s*at \d+:\d+$/, ''),
+        source: 'nodeon'
+      });
+    }
+
+    // Semantic analysis on successful parse
+    const semanticDiags = analyzeSemantics(ast, source);
+    diagnostics.push(...semanticDiags);
+
+    // Type checking
+    const typeDiags = typeCheck(ast);
+    for (const td of typeDiags) {
+      const lines = source.split('\n');
+      const lineText = lines[td.line] || '';
+      diagnostics.push({
+        severity: td.severity === 'error' ? DiagnosticSeverity.Error
+          : td.severity === 'warning' ? DiagnosticSeverity.Warning
+          : DiagnosticSeverity.Hint,
+        range: Range.create(
+          Position.create(td.line, td.column),
+          Position.create(td.line, lineText.length)
+        ),
+        message: td.message,
+        source: 'nodeon-types'
+      });
+    }
+
+    entry.version = doc.version;
+    entry.textHash = hash;
+    entry.ast = ast;
+    entry.symbols = extractSymbols(source);
+    entry.diagnostics = diagnostics;
+  } catch (err: any) {
+    const message = err.message || String(err);
+    const match = message.match(/at (\d+):(\d+)$/);
+    let range: Range;
+    if (match) {
+      const line = parseInt(match[1], 10) - 1;
+      const col = parseInt(match[2], 10) - 1;
+      const lineText = source.split('\n')[line] || '';
+      range = Range.create(
+        Position.create(line, col),
+        Position.create(line, lineText.length)
+      );
+    } else {
+      range = Range.create(Position.create(0, 0), Position.create(0, 0));
+    }
+
+    diagnostics.push({
+      severity: DiagnosticSeverity.Error,
+      range,
+      message: message.replace(/\s*at \d+:\d+$/, ''),
+      source: 'nodeon'
+    });
+
+    entry.version = doc.version;
+    entry.textHash = hash;
+    entry.ast = undefined;
+    entry.symbols = undefined;
+    entry.diagnostics = diagnostics;
+  }
+
+  connection.sendDiagnostics({ uri: doc.uri, diagnostics });
+}
+
+// ── Semantic Analysis ───────────────────────────────────────────────
+
+// Built-in globals that should never trigger "undefined variable"
+const BUILTIN_GLOBALS = new Set([
+  'console', 'Math', 'Date', 'JSON', 'Object', 'Array', 'String', 'Number',
+  'Boolean', 'RegExp', 'Error', 'TypeError', 'RangeError', 'SyntaxError',
+  'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Symbol', 'Proxy', 'Reflect',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'NaN', 'Infinity',
+  'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'print', 'require', 'module', 'exports', '__dirname', '__filename',
+  'process', 'Buffer', 'globalThis', 'global', 'undefined',
+]);
+
+interface SymbolInfo {
+  line: number;
+  used: boolean;
+  kind: 'let' | 'const' | 'var' | 'fn' | 'class' | 'param' | 'for' | 'import' | 'catch' | 'enum';
+}
+
+interface Scope {
+  symbols: Map<string, SymbolInfo>;
+}
+
+function analyzeSemantics(ast: Program, source: string): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const lines = source.split('\n');
+  const scopes: Scope[] = [{ symbols: new Map() }];
+
+  function currentScope(): Scope {
+    return scopes[scopes.length - 1];
+  }
+
+  function pushScope(): void {
+    scopes.push({ symbols: new Map() });
+  }
+
+  function popScope(): void {
+    const scope = scopes.pop();
+    if (!scope) return;
+    // Report unused variables (only for variables, not params/imports in top-level)
+    for (const [name, info] of scope.symbols) {
+      if (!info.used && info.kind !== 'import' && info.kind !== 'catch' && name !== '_') {
+        const line = info.line;
+        const col = findIdentifierColumn(lines[line] || '', name);
+        diagnostics.push({
+          severity: DiagnosticSeverity.Hint,
+          range: Range.create(
+            Position.create(line, col),
+            Position.create(line, col + name.length)
+          ),
+          message: `'${name}' is declared but never used`,
+          source: 'nodeon',
+          tags: [1] // DiagnosticTag.Unnecessary
+        });
+      }
+    }
+  }
+
+  function declare(name: string, line: number, kind: SymbolInfo['kind']): void {
+    const scope = currentScope();
+    const existing = scope.symbols.get(name);
+    if (existing) {
+      const isMutableVarKind = (k: SymbolInfo['kind']) => k === 'let' || k === 'var' || k === 'for';
+
+      // Same symbol already registered (e.g. hoisted fn/class and then visited
+      // again in normal AST walk). Keep previous usage state and avoid resetting.
+      if (existing.line === line && existing.kind === kind) {
+        return;
+      }
+
+      // In Nodeon, mutable variables can be rewritten in the same scope.
+      // Avoid false redeclaration warnings for repeated mutable assignments.
+      if (isMutableVarKind(existing.kind) && isMutableVarKind(kind)) {
+        scope.symbols.set(name, { line: existing.line, used: existing.used, kind: existing.kind });
+        return;
+      }
+
+      if (existing.line !== line || existing.kind !== kind) {
+        const col = findIdentifierColumn(lines[line] || '', name);
+        diagnostics.push({
+          severity: DiagnosticSeverity.Warning,
+          range: Range.create(
+            Position.create(line, col),
+            Position.create(line, col + name.length)
+          ),
+          message: `'${name}' is already declared in this scope (line ${existing.line + 1})`,
+          source: 'nodeon'
+        });
+      }
+
+      // Preserve previous usage state when updating symbol info.
+      scope.symbols.set(name, { line, used: existing.used, kind });
+      return;
+    }
+    scope.symbols.set(name, { line, used: false, kind });
+  }
+
+  function reference(name: string, line: number): void {
+    if (BUILTIN_GLOBALS.has(name)) return;
+    if (KEYWORDS.has(name)) return;
+
+    // Walk scopes from innermost to outermost
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      if (scopes[i].symbols.has(name)) {
+        scopes[i].symbols.get(name)!.used = true;
+        return;
+      }
+    }
+
+    // Not found — undefined variable
+    const col = findIdentifierColumn(lines[line] || '', name);
+    diagnostics.push({
+      severity: DiagnosticSeverity.Error,
+      range: Range.create(
+        Position.create(line, col),
+        Position.create(line, col + name.length)
+      ),
+      message: `'${name}' is not defined`,
+      source: 'nodeon'
+    });
+  }
+
+  function findIdentifierColumn(lineText: string, name: string): number {
+    // Try to find the identifier in the line text
+    const idx = lineText.indexOf(name);
+    return idx >= 0 ? idx : 0;
+  }
+
+  function getLine(node: any): number {
+    if (node?.loc) return node.loc.line - 1;
+    return 0;
+  }
+
+  // ── AST walkers ─────────────────────────────────────────────────
+
+  function walkStatements(stmts: Statement[]): void {
+    for (const stmt of stmts) walkStatement(stmt);
+  }
+
+  function walkStatement(stmt: Statement): void {
+    const line = getLine(stmt);
+
+    switch (stmt.type) {
+      case 'VariableDeclaration': {
+        // Walk the value first (it may reference existing variables)
+        walkExpression(stmt.value, line);
+        declare(stmt.name.name, line, stmt.kind as 'let' | 'const' | 'var');
+        break;
+      }
+      case 'DestructuringDeclaration': {
+        walkExpression(stmt.value, line);
+        declarePattern(stmt.pattern, line, stmt.kind as 'let' | 'const' | 'var');
+        break;
+      }
+      case 'FunctionDeclaration': {
+        declare(stmt.name.name, line, 'fn');
+        pushScope();
+        for (const p of stmt.params) {
+          if (p.pattern) {
+            declarePattern(p.pattern, line, 'param');
+          } else {
+            declare(p.name, line, 'param');
+          }
+          if (p.defaultValue) walkExpression(p.defaultValue, line);
+        }
+        walkStatements(stmt.body);
+        popScope();
+        break;
+      }
+      case 'ClassDeclaration': {
+        declare(stmt.name.name, line, 'class');
+        if (stmt.superClass) reference(stmt.superClass.name, line);
+        pushScope();
+        declare('this', line, 'param'); // 'this' is always available inside class
+        for (const member of stmt.body) {
+          if (member.type === 'ClassField') {
+            if (member.value) walkExpression(member.value, getLine(member));
+            continue;
+          }
+          // ClassMethod
+          pushScope();
+          for (const p of member.params) {
+            if (p.pattern) {
+              declarePattern(p.pattern, getLine(member), 'param');
+            } else {
+              declare(p.name, getLine(member), 'param');
+            }
+            if (p.defaultValue) walkExpression(p.defaultValue, getLine(member));
+          }
+          walkStatements(member.body);
+          popScope();
+        }
+        popScope();
+        break;
+      }
+      case 'IfStatement': {
+        walkExpression(stmt.condition, line);
+        pushScope();
+        walkStatements(stmt.consequent);
+        popScope();
+        if (stmt.alternate) {
+          pushScope();
+          walkStatements(stmt.alternate);
+          popScope();
+        }
+        break;
+      }
+      case 'ForStatement': {
+        pushScope();
+        walkExpression(stmt.iterable, line);
+        if (stmt.variable.type === 'Identifier') {
+          declare(stmt.variable.name, line, 'for');
+        } else {
+          declarePattern(stmt.variable, line, 'for');
+        }
+        walkStatements(stmt.body);
+        popScope();
+        break;
+      }
+      case 'WhileStatement': {
+        walkExpression(stmt.condition, line);
+        pushScope();
+        walkStatements(stmt.body);
+        popScope();
+        break;
+      }
+      case 'DoWhileStatement': {
+        pushScope();
+        walkStatements(stmt.body);
+        popScope();
+        walkExpression(stmt.condition, line);
+        break;
+      }
+      case 'ReturnStatement': {
+        if (stmt.value) walkExpression(stmt.value, line);
+        break;
+      }
+      case 'ThrowStatement': {
+        walkExpression(stmt.value, line);
+        break;
+      }
+      case 'ExpressionStatement': {
+        walkExpression(stmt.expression, line);
+        break;
+      }
+      case 'ImportDeclaration': {
+        if (stmt.defaultImport) {
+          declare(stmt.defaultImport, line, 'import');
+        }
+        if (stmt.namespaceImport) {
+          declare(stmt.namespaceImport, line, 'import');
+        }
+        for (const spec of stmt.namedImports) {
+          declare(spec.alias ?? spec.name, line, 'import');
+        }
+        break;
+      }
+      case 'ExportDeclaration': {
+        if (stmt.declaration) walkStatement(stmt.declaration);
+        break;
+      }
+      case 'TryCatchStatement': {
+        pushScope();
+        walkStatements(stmt.tryBlock);
+        popScope();
+        pushScope();
+        if (stmt.catchParam) declare(stmt.catchParam.name, line, 'catch');
+        walkStatements(stmt.catchBlock);
+        popScope();
+        if (stmt.finallyBlock) {
+          pushScope();
+          walkStatements(stmt.finallyBlock);
+          popScope();
+        }
+        break;
+      }
+      case 'SwitchStatement': {
+        walkExpression(stmt.discriminant, line);
+        for (const c of stmt.cases) {
+          if (c.test) walkExpression(c.test, line);
+          pushScope();
+          walkStatements(c.consequent);
+          popScope();
+        }
+        break;
+      }
+      case 'MatchStatement': {
+        walkExpression(stmt.discriminant, line);
+        for (const c of stmt.cases) {
+          if (c.pattern) walkExpression(c.pattern, line);
+          if (c.guard) walkExpression(c.guard, line);
+          pushScope();
+          walkStatements(c.body);
+          popScope();
+        }
+        break;
+      }
+      case 'EnumDeclaration': {
+        declare(stmt.name.name, line, 'enum');
+        for (const member of stmt.members) {
+          if (member.value) walkExpression(member.value, line);
+        }
+        break;
+      }
+      case 'InterfaceDeclaration': {
+        // Interfaces are type-only, no runtime checks needed
+        declare(stmt.name.name, line, 'class');
+        break;
+      }
+      case 'BreakStatement':
+      case 'ContinueStatement':
+      case 'DebuggerStatement':
+        break;
+    }
+  }
+
+  function declarePattern(pattern: any, line: number, kind: SymbolInfo['kind']): void {
+    if (pattern.type === 'ObjectPattern') {
+      for (const prop of pattern.properties) {
+        if (prop.value.type === 'Identifier') {
+          declare(prop.value.name, line, kind);
+        } else {
+          declarePattern(prop.value, line, kind);
+        }
+      }
+      if (pattern.rest) declare(pattern.rest.name, line, kind);
+    } else if (pattern.type === 'ArrayPattern') {
+      for (const el of pattern.elements) {
+        if (!el) continue;
+        if (el.type === 'Identifier') {
+          declare(el.name, line, kind);
+        } else {
+          declarePattern(el, line, kind);
+        }
+      }
+      if (pattern.rest) declare(pattern.rest.name, line, kind);
+    }
+  }
+
+  function walkExpression(expr: Expression | null | undefined, fallbackLine: number): void {
+    if (!expr) return;
+    const line = (expr as any)?.loc ? (expr as any).loc.line - 1 : fallbackLine;
+
+    switch (expr.type) {
+      case 'Identifier':
+        reference(expr.name, line);
+        break;
+      case 'Literal':
+        break;
+      case 'TemplateLiteral':
+        for (const part of expr.parts) {
+          if (part.kind === 'Expression') walkExpression(part.expression, line);
+        }
+        break;
+      case 'BinaryExpression':
+        walkExpression(expr.left, line);
+        walkExpression(expr.right, line);
+        break;
+      case 'UnaryExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'UpdateExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'CallExpression':
+        walkExpression(expr.callee, line);
+        for (const arg of expr.arguments) walkExpression(arg, line);
+        break;
+      case 'MemberExpression':
+        walkExpression(expr.object, line);
+        if (expr.computed) walkExpression(expr.property, line);
+        break;
+      case 'ArrayExpression':
+        for (const el of expr.elements) walkExpression(el, line);
+        break;
+      case 'ObjectExpression':
+        for (const prop of expr.properties) walkExpression(prop.value, line);
+        break;
+      case 'ArrowFunction': {
+        pushScope();
+        for (const p of expr.params) {
+          if (p.pattern) {
+            declarePattern(p.pattern, line, 'param');
+          } else {
+            declare(p.name, line, 'param');
+          }
+          if (p.defaultValue) walkExpression(p.defaultValue, line);
+        }
+        if (Array.isArray(expr.body)) {
+          walkStatements(expr.body);
+        } else {
+          walkExpression(expr.body, line);
+        }
+        popScope();
+        break;
+      }
+      case 'AssignmentExpression':
+        walkExpression(expr.right, line);
+        // For bare assignments (x = value), if x is an Identifier, treat it as
+        // an implicit declaration in Nodeon (similar to Python)
+        if (expr.left.type === 'Identifier') {
+          // Check if it already exists in scope — if so, just mark used
+          let found = false;
+          for (let i = scopes.length - 1; i >= 0; i--) {
+            if (scopes[i].symbols.has(expr.left.name)) {
+              scopes[i].symbols.get(expr.left.name)!.used = true;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            declare(expr.left.name, line, 'let');
+          }
+        } else {
+          walkExpression(expr.left, line);
+        }
+        break;
+      case 'CompoundAssignmentExpression':
+        walkExpression(expr.left, line);
+        walkExpression(expr.right, line);
+        break;
+      case 'NewExpression':
+        walkExpression(expr.callee, line);
+        for (const arg of expr.arguments) walkExpression(arg, line);
+        break;
+      case 'AwaitExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'SpreadExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'TernaryExpression':
+        walkExpression(expr.condition, line);
+        walkExpression(expr.consequent, line);
+        walkExpression(expr.alternate, line);
+        break;
+      case 'TypeofExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'VoidExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'DeleteExpression':
+        walkExpression(expr.argument, line);
+        break;
+      case 'YieldExpression':
+        if (expr.argument) walkExpression(expr.argument, line);
+        break;
+      case 'ObjectPattern':
+      case 'ArrayPattern':
+        // Patterns are handled by declarePattern
+        break;
+    }
+  }
+
+  // Pre-pass: hoist top-level fn/class declarations (they're available before their textual position)
+  function hoistDeclarations(stmts: Statement[]): void {
+    for (const stmt of stmts) {
+      if (stmt.type === 'FunctionDeclaration') {
+        declare(stmt.name.name, getLine(stmt), 'fn');
+      } else if (stmt.type === 'ClassDeclaration') {
+        declare(stmt.name.name, getLine(stmt), 'class');
+      } else if (stmt.type === 'ExportDeclaration' && stmt.declaration) {
+        if (stmt.declaration.type === 'FunctionDeclaration') {
+          declare(stmt.declaration.name.name, getLine(stmt.declaration), 'fn');
+        } else if (stmt.declaration.type === 'ClassDeclaration') {
+          declare(stmt.declaration.name.name, getLine(stmt.declaration), 'class');
+        }
+      }
+    }
+  }
+
+  hoistDeclarations(ast.body);
+
+  // Run the analysis
+  walkStatements(ast.body);
+
+  // Pop the global scope (reports unused globals)
+  popScope();
+
+  return diagnostics;
+}
+
+// ── Completions ─────────────────────────────────────────────────────
+
+connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] => {
+  const items: CompletionItem[] = [];
+
+  // Keyword completions
+  const keywordList = Array.from(KEYWORDS);
+  for (const kw of keywordList) {
+    items.push({
+      label: kw,
+      kind: CompletionItemKind.Keyword,
+      detail: `Nodeon keyword`
+    });
+  }
+
+  // Built-in functions
+  items.push({ label: 'print', kind: CompletionItemKind.Function, detail: 'print(value) → console.log' });
+
+  // Snippet completions
+  const snippets: { label: string; detail: string; insertText: string }[] = [
+    { label: 'fn', detail: 'Function declaration', insertText: 'fn ${1:name}(${2:params}) {\n  ${0}\n}' },
+    { label: 'afn', detail: 'Async function', insertText: 'async fn ${1:name}(${2:params}) {\n  ${0}\n}' },
+    { label: 'class', detail: 'Class declaration', insertText: 'class ${1:Name} {\n  constructor(${2}) {\n    ${0}\n  }\n}' },
+    { label: 'if', detail: 'If statement', insertText: 'if ${1:condition} {\n  ${0}\n}' },
+    { label: 'ife', detail: 'If-else statement', insertText: 'if ${1:condition} {\n  ${2}\n} else {\n  ${0}\n}' },
+    { label: 'for', detail: 'For-in loop', insertText: 'for ${1:item} in ${2:collection} {\n  ${0}\n}' },
+    { label: 'forr', detail: 'For-range loop', insertText: 'for ${1:i} in ${2:0}..${3:10} {\n  ${0}\n}' },
+    { label: 'while', detail: 'While loop', insertText: 'while ${1:condition} {\n  ${0}\n}' },
+    { label: 'match', detail: 'Match expression', insertText: 'match ${1:expr} {\n  case ${2:value} {\n    ${0}\n  }\n  default {\n  }\n}' },
+    { label: 'try', detail: 'Try-catch block', insertText: 'try {\n  ${1}\n} catch (${2:err}) {\n  ${0}\n}' },
+    { label: 'imp', detail: 'Import statement', insertText: 'import ${1:name} from "${2:module}"' },
+    { label: 'impn', detail: 'Named import', insertText: 'import { ${1:name} } from "${2:module}"' },
+    { label: 'export', detail: 'Export function', insertText: 'export fn ${1:name}(${2:params}) {\n  ${0}\n}' },
+    { label: 'enum', detail: 'Enum declaration', insertText: 'enum ${1:Name} {\n  ${0}\n}' },
+    { label: 'interface', detail: 'Interface declaration', insertText: 'interface ${1:Name} {\n  ${0}\n}' },
+    { label: 'arrow', detail: 'Arrow function', insertText: '(${1:params}) => {\n  ${0}\n}' },
+  ];
+
+  for (const snip of snippets) {
+    items.push({
+      label: snip.label,
+      kind: CompletionItemKind.Snippet,
+      detail: `Snippet: ${snip.detail}`,
+      insertText: snip.insertText,
+      insertTextFormat: InsertTextFormat.Snippet,
+    });
+  }
+
+  // Document identifiers (functions, variables, classes)
+  const doc = documents.get(params.textDocument.uri);
+  if (doc) {
+    const symbols = extractSymbols(doc.getText());
+    for (const sym of symbols) {
+      if (sym.kind === 'function') {
+        items.push({ label: sym.name, kind: CompletionItemKind.Function, detail: sym.detail });
+      } else if (sym.kind === 'variable') {
+        items.push({ label: sym.name, kind: CompletionItemKind.Variable, detail: sym.detail });
+      } else if (sym.kind === 'class') {
+        items.push({ label: sym.name, kind: CompletionItemKind.Class, detail: sym.detail });
+      }
+    }
+  }
+
+  return items;
+});
+
+// ── Hover ───────────────────────────────────────────────────────────
+
+connection.onHover((params: TextDocumentPositionParams): Hover | null => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return null;
+
+  const word = getWordAtPosition(doc, params.position);
+  if (!word) return null;
+
+  // Check keywords
+  if (KEYWORDS.has(word)) {
+    const desc = KEYWORD_DOCS[word];
+    if (desc) {
+      return {
+        contents: { kind: MarkupKind.Markdown, value: `**\`${word}\`** — ${desc}` }
+      };
+    }
+    return {
+      contents: { kind: MarkupKind.Markdown, value: `**\`${word}\`** — Nodeon keyword` }
+    };
+  }
+
+  // Check document symbols
+  const symbols = extractSymbols(doc.getText());
+  const sym = symbols.find(s => s.name === word);
+  if (sym) {
+    return {
+      contents: { kind: MarkupKind.Markdown, value: `**\`${sym.name}\`** — ${sym.detail}` }
+    };
+  }
+
+  return null;
+});
+
+// ── Go-to-Definition ────────────────────────────────────────────────
+
+connection.onDefinition((params: DefinitionParams): Location | null => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return null;
+
+  const word = getWordAtPosition(doc, params.position);
+  if (!word) return null;
+
+  const source = doc.getText();
+  const lines = source.split('\n');
+
+  // Search for function, class, or variable declarations
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // fn <name>(
+    const fnMatch = line.match(new RegExp(`\\bfn\\s+${escapeRegex(word)}\\b`));
+    if (fnMatch) {
+      const col = fnMatch.index! + fnMatch[0].indexOf(word);
+      return Location.create(params.textDocument.uri, Range.create(i, col, i, col + word.length));
+    }
+    // class <name>
+    const classMatch = line.match(new RegExp(`\\bclass\\s+${escapeRegex(word)}\\b`));
+    if (classMatch) {
+      const col = classMatch.index! + classMatch[0].indexOf(word);
+      return Location.create(params.textDocument.uri, Range.create(i, col, i, col + word.length));
+    }
+    // let/const/var <name> = or <name> =
+    const varMatch = line.match(new RegExp(`\\b(?:let|const|var)\\s+${escapeRegex(word)}\\b`));
+    if (varMatch) {
+      const col = varMatch.index! + varMatch[0].indexOf(word);
+      return Location.create(params.textDocument.uri, Range.create(i, col, i, col + word.length));
+    }
+  }
+
+  return null;
+});
+
+// ── Formatting ──────────────────────────────────────────────────────
+
+connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+
+  const source = doc.getText();
+  const formatted = formatNodeon(source, params.options.tabSize ?? 2);
+  if (formatted === source) return [];
+
+  // Replace entire document
+  const lastLine = doc.lineCount - 1;
+  const lastChar = doc.getText(Range.create(lastLine, 0, lastLine + 1, 0)).length;
+  return [TextEdit.replace(Range.create(0, 0, lastLine, lastChar), formatted)];
+});
+
+function formatNodeon(source: string, tabSize: number): string {
+  const indent = ' '.repeat(tabSize);
+  const lines = source.split('\n');
+  const result: string[] = [];
+  let depth = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+
+    // Skip empty lines (preserve them)
+    if (line.length === 0) {
+      result.push('');
+      continue;
+    }
+
+    // Decrease indent for closing braces
+    if (line.startsWith('}') || line.startsWith(']') || line.startsWith(')')) {
+      depth = Math.max(0, depth - 1);
+    }
+    // Handle `} else {`, `} catch`, `} finally`, `} while` on same line
+    if (/^}\s*(else|catch|finally|while)/.test(line)) {
+      // Already decreased above, don't decrease again
+    }
+
+    // Apply indentation
+    const indented = indent.repeat(depth) + line;
+    result.push(indented);
+
+    // Count net brace changes for next line
+    let netOpen = 0;
+    let inString = false;
+    let stringChar = '';
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j];
+      if (inString) {
+        if (ch === '\\') { j++; continue; }
+        if (ch === stringChar) inString = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') {
+        inString = true;
+        stringChar = ch;
+        continue;
+      }
+      // Skip line comments
+      if (ch === '#') break;
+      if (ch === '/' && j + 1 < line.length && line[j + 1] === '/') break;
+      if (ch === '{' || ch === '(' && isBlockParen(line, j) || ch === '[') {
+        if (ch === '{') netOpen++;
+      }
+      if (ch === '}') netOpen--;
+    }
+    depth = Math.max(0, depth + netOpen);
+  }
+
+  // Trim trailing empty lines, ensure single trailing newline
+  while (result.length > 0 && result[result.length - 1] === '') {
+    result.pop();
+  }
+  return result.join('\n') + '\n';
+}
+
+function isBlockParen(_line: string, _pos: number): boolean {
+  return false; // Don't increase indent for parentheses
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+interface DocSymbol {
+  name: string;
+  kind: 'function' | 'variable' | 'class';
+  detail: string;
+  line: number;
+}
+
+function extractSymbols(source: string): DocSymbol[] {
+  const symbols: DocSymbol[] = [];
+  const seen = new Set<string>();
+  const lines = source.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // fn name(params)
+    const fnMatch = line.match(/\bfn\s+(\w+)\s*\(([^)]*)\)/);
+    if (fnMatch && !seen.has(fnMatch[1])) {
+      seen.add(fnMatch[1]);
+      const params = fnMatch[2].trim();
+      symbols.push({
+        name: fnMatch[1],
+        kind: 'function',
+        detail: `fn ${fnMatch[1]}(${params})`,
+        line: i
+      });
+    }
+
+    // class Name
+    const classMatch = line.match(/\bclass\s+(\w+)/);
+    if (classMatch && !seen.has(classMatch[1])) {
+      seen.add(classMatch[1]);
+      symbols.push({
+        name: classMatch[1],
+        kind: 'class',
+        detail: `class ${classMatch[1]}`,
+        line: i
+      });
+    }
+
+    // let/const/var name =
+    const varMatch = line.match(/\b(let|const|var)\s+(\w+)/);
+    if (varMatch && !seen.has(varMatch[2])) {
+      seen.add(varMatch[2]);
+      symbols.push({
+        name: varMatch[2],
+        kind: 'variable',
+        detail: `${varMatch[1]} ${varMatch[2]}`,
+        line: i
+      });
+    }
+
+    // Bare assignment: name = (implicit let)
+    const assignMatch = line.match(/^(\w+)\s*=/);
+    if (assignMatch && !seen.has(assignMatch[1]) && !KEYWORDS.has(assignMatch[1])) {
+      seen.add(assignMatch[1]);
+      symbols.push({
+        name: assignMatch[1],
+        kind: 'variable',
+        detail: `${assignMatch[1]} (inferred)`,
+        line: i
+      });
+    }
+  }
+
+  return symbols;
+}
+
+function getWordAtPosition(doc: TextDocument, pos: Position): string | null {
+  const line = doc.getText(Range.create(pos.line, 0, pos.line + 1, 0));
+  const before = line.slice(0, pos.character);
+  const after = line.slice(pos.character);
+  const startMatch = before.match(/(\w+)$/);
+  const endMatch = after.match(/^(\w*)/);
+  if (!startMatch) return null;
+  return startMatch[1] + (endMatch ? endMatch[1] : '');
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const KEYWORD_DOCS: Record<string, string> = {
+  fn: 'Declare a function: `fn name(params) { body }`',
+  if: 'Conditional statement: `if condition { ... }`',
+  else: 'Alternate branch: `else { ... }` or `else if { ... }`',
+  for: 'Loop: `for x in collection { ... }` or `for i in 0..10 { ... }`',
+  in: 'Iteration keyword used with `for` loops',
+  while: 'While loop: `while condition { ... }`',
+  do: 'Do-while loop: `do { ... } while condition`',
+  return: 'Return a value from a function',
+  import: 'Import module: `import name from "module"`',
+  export: 'Export declaration: `export fn name() { ... }`',
+  class: 'Define a class: `class Name { fn method() { ... } }`',
+  extends: 'Class inheritance: `class Child extends Parent { ... }`',
+  new: 'Create instance: `new ClassName(args)`',
+  const: 'Immutable variable declaration: `const name = value`',
+  let: 'Mutable variable declaration: `let name = value`',
+  var: 'Variable declaration (function-scoped): `var name = value`',
+  match: 'Pattern matching: `match expr { case val { ... } default { ... } }`',
+  switch: 'Switch statement: `switch expr { case val { ... } default { ... } }`',
+  try: 'Try-catch: `try { ... } catch err { ... } finally { ... }`',
+  catch: 'Catch block for error handling',
+  finally: 'Finally block — always executes after try/catch',
+  throw: 'Throw an error: `throw new Error("msg")`',
+  async: 'Mark function as async: `async fn name() { ... }`',
+  await: 'Await a promise: `await expression`',
+  print: 'Print to console: `print(value)` → `console.log(value)`',
+  break: 'Break out of a loop',
+  continue: 'Skip to next loop iteration',
+  typeof: 'Get type of value: `typeof expr`',
+  yield: 'Yield from generator function',
+  this: 'Reference to current object instance',
+  super: 'Reference to parent class',
+  true: 'Boolean literal `true`',
+  false: 'Boolean literal `false`',
+  null: 'Null literal',
+  undefined: 'Undefined literal',
+  debugger: 'Debugger breakpoint statement',
+  enum: 'Enum declaration: `enum Color { Red, Green, Blue }` — compiles to `Object.freeze({...})`',
+  interface: 'Interface declaration: `interface Shape { area(): number }` — type-only, stripped from JS output',
+};
+
+// ── Rename Symbol ───────────────────────────────────────────────────
+
+connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return null;
+
+  const word = getWordAtPosition(doc, params.position);
+  if (!word || KEYWORDS.has(word)) return null;
+
+  const source = doc.getText();
+  const edits: TextEdit[] = [];
+  const regex = new RegExp(`\\b${escapeRegex(word)}\\b`, 'g');
+  const lines = source.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    let match: RegExpExecArray | null;
+    regex.lastIndex = 0;
+    while ((match = regex.exec(lines[i])) !== null) {
+      edits.push(TextEdit.replace(
+        Range.create(i, match.index, i, match.index + word.length),
+        params.newName
+      ));
+    }
+  }
+
+  if (edits.length === 0) return null;
+  return { changes: { [params.textDocument.uri]: edits } };
+});
+
+// ── Find References ─────────────────────────────────────────────────
+
+connection.onReferences((params: ReferenceParams): Location[] => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+
+  const word = getWordAtPosition(doc, params.position);
+  if (!word) return [];
+
+  const source = doc.getText();
+  const locations: Location[] = [];
+  const regex = new RegExp(`\\b${escapeRegex(word)}\\b`, 'g');
+  const lines = source.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    let match: RegExpExecArray | null;
+    regex.lastIndex = 0;
+    while ((match = regex.exec(lines[i])) !== null) {
+      locations.push(Location.create(
+        params.textDocument.uri,
+        Range.create(i, match.index, i, match.index + word.length)
+      ));
+    }
+  }
+
+  return locations;
+});
+
+// ── Semantic Tokens ─────────────────────────────────────────────────
+
+const TOKEN_TYPES = [
+  'function', 'variable', 'class', 'parameter', 'keyword',
+  'string', 'number', 'comment', 'operator', 'type',
+  'enum', 'interface', 'property', 'method', 'namespace',
+  'enumMember', 'typeParameter', 'decorator'
+];
+const TOKEN_MODIFIERS = [
+  'declaration', 'readonly', 'async', 'static',
+  'defaultLibrary', 'modification', 'definition'
+];
+
+function tokenTypeIndex(type: string): number {
+  return TOKEN_TYPES.indexOf(type);
+}
+
+function modifierBitmask(...mods: string[]): number {
+  let mask = 0;
+  for (const m of mods) {
+    const idx = TOKEN_MODIFIERS.indexOf(m);
+    if (idx >= 0) mask |= (1 << idx);
+  }
+  return mask;
+}
+
+interface SemanticToken {
+  line: number;
+  char: number;
+  length: number;
+  type: string;
+  modifiers: string[];
+}
+
+function collectSemanticTokens(ast: Program, source: string): SemanticToken[] {
+  const tokens: SemanticToken[] = [];
+  const lines = source.split('\n');
+
+  function getPos(node: any): { line: number; char: number } | null {
+    if (node?.loc) return { line: node.loc.line - 1, char: node.loc.column - 1 };
+    return null;
+  }
+
+  function findInLine(line: number, name: string, startCol?: number): number {
+    const text = lines[line] || '';
+    const from = startCol ?? 0;
+    // Find exact word match
+    const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+    regex.lastIndex = from;
+    const m = regex.exec(text);
+    return m ? m.index : -1;
+  }
+
+  function addToken(line: number, name: string, type: string, modifiers: string[] = [], startCol?: number): void {
+    const col = findInLine(line, name, startCol);
+    if (col < 0) return;
+    tokens.push({ line, char: col, length: name.length, type, modifiers });
+  }
+
+  function walkStmts(stmts: Statement[]): void {
+    for (const s of stmts) walkStmt(s);
+  }
+
+  function walkStmt(stmt: Statement): void {
+    const pos = getPos(stmt);
+    const line = pos?.line ?? 0;
+
+    switch (stmt.type) {
+      case 'FunctionDeclaration': {
+        addToken(line, stmt.name.name, 'function', ['declaration', 'definition']);
+        for (const p of stmt.params) {
+          if (!p.pattern) addToken(line, p.name, 'parameter', ['declaration']);
+          if (p.defaultValue) walkExpr(p.defaultValue, line);
+        }
+        walkStmts(stmt.body);
+        break;
+      }
+      case 'ClassDeclaration': {
+        addToken(line, stmt.name.name, 'class', ['declaration', 'definition']);
+        if (stmt.superClass) addToken(line, stmt.superClass.name, 'class');
+        for (const member of stmt.body) {
+          const mline = getPos(member)?.line ?? line;
+          if (member.type === 'ClassField') {
+            if (member.name.type === 'Identifier') {
+              addToken(mline, member.name.name, 'property', ['declaration']);
+            }
+            if (member.value) walkExpr(member.value, mline);
+          } else {
+            // ClassMethod
+            const mods: string[] = ['declaration'];
+            if (member.static) mods.push('static');
+            if (member.async) mods.push('async');
+            if (member.name.type === 'Identifier') {
+              const methodType = member.name.name === 'constructor' ? 'function' : 'method';
+              addToken(mline, member.name.name, methodType, mods);
+            }
+            for (const p of member.params) {
+              if (!p.pattern) addToken(mline, p.name, 'parameter', ['declaration']);
+              if (p.defaultValue) walkExpr(p.defaultValue, mline);
+            }
+            walkStmts(member.body);
+          }
+        }
+        break;
+      }
+      case 'VariableDeclaration': {
+        const vmod: string[] = ['declaration'];
+        if (stmt.kind === 'const') vmod.push('readonly');
+        addToken(line, stmt.name.name, 'variable', vmod);
+        walkExpr(stmt.value, line);
+        break;
+      }
+      case 'EnumDeclaration': {
+        addToken(line, stmt.name.name, 'enum', ['declaration']);
+        for (const m of stmt.members) {
+          addToken(getPos(m)?.line ?? line, m.name.name, 'enumMember', ['declaration']);
+          if (m.value) walkExpr(m.value, getPos(m)?.line ?? line);
+        }
+        break;
+      }
+      case 'InterfaceDeclaration': {
+        addToken(line, stmt.name.name, 'interface', ['declaration']);
+        break;
+      }
+      case 'IfStatement': {
+        walkExpr(stmt.condition, line);
+        walkStmts(stmt.consequent);
+        if (stmt.alternate) walkStmts(stmt.alternate);
+        break;
+      }
+      case 'ForStatement': {
+        walkExpr(stmt.iterable, line);
+        if (stmt.variable.type === 'Identifier') {
+          addToken(line, stmt.variable.name, 'variable', ['declaration']);
+        }
+        walkStmts(stmt.body);
+        break;
+      }
+      case 'WhileStatement': {
+        walkExpr(stmt.condition, line);
+        walkStmts(stmt.body);
+        break;
+      }
+      case 'DoWhileStatement': {
+        walkStmts(stmt.body);
+        walkExpr(stmt.condition, line);
+        break;
+      }
+      case 'ReturnStatement': {
+        if (stmt.value) walkExpr(stmt.value, line);
+        break;
+      }
+      case 'ThrowStatement': {
+        walkExpr(stmt.value, line);
+        break;
+      }
+      case 'ExpressionStatement': {
+        walkExpr(stmt.expression, line);
+        break;
+      }
+      case 'ImportDeclaration': {
+        if (stmt.defaultImport) {
+          addToken(line, stmt.defaultImport, 'variable', ['declaration', 'readonly']);
+        }
+        if (stmt.namespaceImport) {
+          addToken(line, stmt.namespaceImport, 'variable', ['declaration', 'readonly']);
+        }
+        for (const spec of stmt.namedImports) {
+          const alias = spec.alias ?? spec.name;
+          addToken(line, alias, 'variable', ['declaration', 'readonly']);
+        }
+        break;
+      }
+      case 'ExportDeclaration': {
+        if (stmt.declaration) walkStmt(stmt.declaration);
+        break;
+      }
+      case 'TryCatchStatement': {
+        walkStmts(stmt.tryBlock);
+        if (stmt.catchParam) addToken(line, stmt.catchParam.name, 'parameter', ['declaration']);
+        walkStmts(stmt.catchBlock);
+        if (stmt.finallyBlock) walkStmts(stmt.finallyBlock);
+        break;
+      }
+      case 'SwitchStatement': {
+        walkExpr(stmt.discriminant, line);
+        for (const c of stmt.cases) {
+          if (c.test) walkExpr(c.test, line);
+          walkStmts(c.consequent);
+        }
+        break;
+      }
+      case 'MatchStatement': {
+        walkExpr(stmt.discriminant, line);
+        for (const c of stmt.cases) {
+          if (c.pattern) walkExpr(c.pattern, line);
+          if (c.guard) walkExpr(c.guard, line);
+          walkStmts(c.body);
+        }
+        break;
+      }
+      case 'DestructuringDeclaration': {
+        walkExpr(stmt.value, line);
+        break;
+      }
+    }
+  }
+
+  function walkExpr(expr: Expression | null | undefined, fallbackLine: number): void {
+    if (!expr) return;
+    const pos = getPos(expr);
+    const line = pos?.line ?? fallbackLine;
+
+    switch (expr.type) {
+      case 'Identifier':
+        // Don't add semantic token for identifiers here — they get correct
+        // coloring from TextMate. Only function calls and special forms get tokens.
+        break;
+      case 'CallExpression': {
+        // Highlight the callee as function
+        if (expr.callee.type === 'Identifier') {
+          const cPos = getPos(expr.callee);
+          addToken(cPos?.line ?? line, expr.callee.name, 'function');
+        } else if (expr.callee.type === 'MemberExpression' && !expr.callee.computed) {
+          const prop = expr.callee.property as any;
+          if (prop?.type === 'Identifier') {
+            addToken(getPos(prop)?.line ?? line, prop.name, 'method');
+          }
+        }
+        walkExpr(expr.callee.type === 'MemberExpression' ? (expr.callee as any).object : null, line);
+        for (const arg of expr.arguments) walkExpr(arg, line);
+        break;
+      }
+      case 'MemberExpression': {
+        walkExpr(expr.object, line);
+        if (expr.computed) walkExpr(expr.property, line);
+        else if ((expr.property as any)?.type === 'Identifier') {
+          addToken(getPos(expr.property)?.line ?? line, (expr.property as any).name, 'property');
+        }
+        break;
+      }
+      case 'NewExpression': {
+        if (expr.callee.type === 'Identifier') {
+          addToken(getPos(expr.callee)?.line ?? line, (expr.callee as any).name, 'class');
+        }
+        for (const arg of expr.arguments) walkExpr(arg, line);
+        break;
+      }
+      case 'BinaryExpression': {
+        walkExpr(expr.left, line);
+        walkExpr(expr.right, line);
+        break;
+      }
+      case 'UnaryExpression':
+      case 'UpdateExpression':
+      case 'AwaitExpression':
+      case 'SpreadExpression':
+      case 'TypeofExpression':
+      case 'VoidExpression':
+      case 'DeleteExpression': {
+        walkExpr((expr as any).argument, line);
+        break;
+      }
+      case 'ArrowFunction': {
+        for (const p of expr.params) {
+          if (!p.pattern) addToken(line, p.name, 'parameter', ['declaration']);
+          if (p.defaultValue) walkExpr(p.defaultValue, line);
+        }
+        if (Array.isArray(expr.body)) walkStmts(expr.body);
+        else walkExpr(expr.body, line);
+        break;
+      }
+      case 'ArrayExpression': {
+        for (const el of expr.elements) walkExpr(el, line);
+        break;
+      }
+      case 'ObjectExpression': {
+        for (const prop of expr.properties) {
+          if (prop.key?.type === 'Identifier') {
+            addToken(getPos(prop)?.line ?? line, prop.key.name, 'property', ['declaration']);
+          }
+          walkExpr(prop.value, line);
+        }
+        break;
+      }
+      case 'TernaryExpression': {
+        walkExpr(expr.condition, line);
+        walkExpr(expr.consequent, line);
+        walkExpr(expr.alternate, line);
+        break;
+      }
+      case 'AssignmentExpression': {
+        walkExpr(expr.left, line);
+        walkExpr(expr.right, line);
+        break;
+      }
+      case 'CompoundAssignmentExpression': {
+        walkExpr(expr.left, line);
+        walkExpr(expr.right, line);
+        break;
+      }
+      case 'TemplateLiteral': {
+        for (const part of expr.parts) {
+          if (part.kind === 'Expression') walkExpr(part.expression, line);
+        }
+        break;
+      }
+      case 'YieldExpression': {
+        if (expr.argument) walkExpr(expr.argument, line);
+        break;
+      }
+    }
+  }
+
+  walkStmts(ast.body);
+  return tokens;
+}
+
+connection.languages.semanticTokens.on((params: SemanticTokensParams): SemanticTokens => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return { data: [] };
+
+  const entry = docCache.get(doc.uri);
+  let ast = entry?.ast;
+
+  if (!ast) {
+    // Cache miss — trigger validation to refresh caches, but return empty now
+    scheduleValidation(doc);
+    return { data: [] };
+  }
+
+  const source = doc.getText();
+  const data: number[] = [];
+
+  try {
+    const semanticTokens = collectSemanticTokens(ast, source);
+    // Sort by position
+    semanticTokens.sort((a, b) => a.line - b.line || a.char - b.char);
+
+    let prevLine = 0;
+    let prevChar = 0;
+
+    for (const tok of semanticTokens) {
+      const typeIdx = tokenTypeIndex(tok.type);
+      if (typeIdx < 0) continue;
+
+      const deltaLine = tok.line - prevLine;
+      const deltaChar = deltaLine === 0 ? tok.char - prevChar : tok.char;
+
+      data.push(deltaLine, deltaChar, tok.length, typeIdx, modifierBitmask(...tok.modifiers));
+      prevLine = tok.line;
+      prevChar = tok.char;
+    }
+  } catch {
+    // If analysis fails, return empty — diagnostics show errors
+  }
+
+  return { data };
+});
+
+// ── Code Actions (Quick Fixes) ──────────────────────────────────────
+
+connection.onCodeAction((params): CodeAction[] => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+
+  const actions: CodeAction[] = [];
+
+  for (const diag of params.context.diagnostics) {
+    // Quick fix: "Add type annotation" for type mismatches
+    if (diag.message.includes("not assignable to type")) {
+      const match = diag.message.match(/type '(\w+)'/);
+      if (match) {
+        actions.push({
+          title: `Change type to '${match[1]}'`,
+          kind: CodeActionKind.QuickFix,
+          diagnostics: [diag],
+          isPreferred: true,
+        });
+      }
+    }
+
+    // Quick fix: wrap undeclared variable in let
+    if (diag.message.includes("is not defined") || diag.message.includes("undeclared")) {
+      const line = doc.getText(diag.range).trim();
+      actions.push({
+        title: `Declare with 'let'`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diag],
+        edit: {
+          changes: {
+            [params.textDocument.uri]: [{
+              range: Range.create(diag.range.start, diag.range.start),
+              newText: "let "
+            }]
+          }
+        }
+      });
+    }
+  }
+
+  return actions;
+});
+
+// ── Signature Help ──────────────────────────────────────────────────
+
+connection.onSignatureHelp((params): SignatureHelp | null => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return null;
+
+  const source = doc.getText();
+  const offset = doc.offsetAt(params.position);
+  const textBefore = source.slice(0, offset);
+
+  // Find the function name before the opening paren
+  // Walk backwards to find the matching '(' and count commas for active parameter
+  let parenDepth = 0;
+  let commaCount = 0;
+  let openParenIdx = -1;
+
+  for (let i = textBefore.length - 1; i >= 0; i--) {
+    const ch = textBefore[i];
+    if (ch === ')') parenDepth++;
+    else if (ch === '(') {
+      if (parenDepth === 0) {
+        openParenIdx = i;
+        break;
+      }
+      parenDepth--;
+    } else if (ch === ',' && parenDepth === 0) {
+      commaCount++;
+    }
+  }
+
+  if (openParenIdx < 0) return null;
+
+  // Extract function name before the '('
+  const beforeParen = textBefore.slice(0, openParenIdx).trimEnd();
+  const fnNameMatch = beforeParen.match(/(\w+)$/);
+  if (!fnNameMatch) return null;
+  const fnName = fnNameMatch[1];
+
+  // Look up the function in document symbols (use cache if available)
+  const entry = docCache.get(doc.uri);
+  const symbols = entry?.symbols ?? extractSymbols(source);
+  const fnSym = symbols.find(s => s.name === fnName && s.kind === 'function');
+
+  if (!fnSym) {
+    // Check built-in print
+    if (fnName === 'print') {
+      return {
+        signatures: [{
+          label: 'print(...args)',
+          documentation: 'Print values to console (maps to console.log)',
+          parameters: [{ label: '...args', documentation: 'Values to print' }]
+        }],
+        activeSignature: 0,
+        activeParameter: commaCount
+      };
+    }
+    return null;
+  }
+
+  // Parse the function detail to extract parameters
+  const detailMatch = fnSym.detail.match(/fn\s+\w+\(([^)]*)\)/);
+  if (!detailMatch) return null;
+
+  const paramStr = detailMatch[1].trim();
+  const paramNames = paramStr ? paramStr.split(',').map(p => p.trim()) : [];
+  const parameters: ParameterInformation[] = paramNames.map(p => ({
+    label: p,
+    documentation: `Parameter: ${p}`
+  }));
+
+  const sig: SignatureInformation = {
+    label: fnSym.detail,
+    documentation: `Function ${fnName}`,
+    parameters
+  };
+
+  return {
+    signatures: [sig],
+    activeSignature: 0,
+    activeParameter: Math.min(commaCount, parameters.length - 1)
+  };
+});
+
+// ── Document Symbols ────────────────────────────────────────────────
+
+connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+
+  const entry = docCache.get(doc.uri);
+  const ast = entry?.ast;
+  if (!ast) {
+    scheduleValidation(doc);
+    return [];
+  }
+
+  const result: DocumentSymbol[] = [];
+
+  for (const stmt of ast.body) {
+    const line = stmt.loc ? stmt.loc.line - 1 : 0;
+    const col = stmt.loc ? stmt.loc.column - 1 : 0;
+
+    switch (stmt.type) {
+      case 'FunctionDeclaration': {
+        const params = stmt.params.map(p => p.name).join(', ');
+        const children: DocumentSymbol[] = [];
+        // Collect local variables inside the function
+        for (const s of stmt.body) {
+          if (s.type === 'VariableDeclaration') {
+            const vline = s.loc ? s.loc.line - 1 : line;
+            children.push({
+              name: s.name.name,
+              kind: s.kind === 'const' ? SymbolKind.Constant : SymbolKind.Variable,
+              range: Range.create(vline, 0, vline, 100),
+              selectionRange: Range.create(vline, 0, vline, s.name.name.length),
+            });
+          }
+        }
+        result.push({
+          name: stmt.name.name,
+          detail: `fn(${params})`,
+          kind: SymbolKind.Function,
+          range: Range.create(line, col, line + stmt.body.length + 1, 0),
+          selectionRange: Range.create(line, col, line, col + stmt.name.name.length),
+          children: children.length > 0 ? children : undefined,
+        });
+        break;
+      }
+      case 'ClassDeclaration': {
+        const children: DocumentSymbol[] = [];
+        for (const member of stmt.body) {
+          const mline = (member as any).loc ? (member as any).loc.line - 1 : line;
+          if (member.type === 'ClassMethod') {
+            const mparams = member.params.map(p => p.name).join(', ');
+            const mname = (member.name as any).name;
+            children.push({
+              name: mname,
+              detail: `(${mparams})`,
+              kind: mname === 'constructor' ? SymbolKind.Constructor : SymbolKind.Method,
+              range: Range.create(mline, 0, mline + member.body.length + 1, 0),
+              selectionRange: Range.create(mline, 0, mline, mname.length),
+            });
+          } else if (member.type === 'ClassField') {
+            const fname = (member.name as any).name;
+            children.push({
+              name: fname,
+              kind: SymbolKind.Property,
+              range: Range.create(mline, 0, mline, 100),
+              selectionRange: Range.create(mline, 0, mline, fname.length),
+            });
+          }
+        }
+        result.push({
+          name: stmt.name.name,
+          detail: stmt.superClass ? `extends ${stmt.superClass.name}` : undefined,
+          kind: SymbolKind.Class,
+          range: Range.create(line, col, line + stmt.body.length + 1, 0),
+          selectionRange: Range.create(line, col, line, col + stmt.name.name.length),
+          children: children.length > 0 ? children : undefined,
+        });
+        break;
+      }
+      case 'VariableDeclaration': {
+        result.push({
+          name: stmt.name.name,
+          kind: stmt.kind === 'const' ? SymbolKind.Constant : SymbolKind.Variable,
+          range: Range.create(line, col, line, 100),
+          selectionRange: Range.create(line, col, line, col + stmt.name.name.length),
+        });
+        break;
+      }
+      case 'EnumDeclaration': {
+        const children: DocumentSymbol[] = stmt.members.map((m, idx) => {
+          const mline = (m as any).loc ? (m as any).loc.line - 1 : line + idx + 1;
+          return {
+            name: m.name.name,
+            kind: SymbolKind.EnumMember,
+            range: Range.create(mline, 0, mline, 100),
+            selectionRange: Range.create(mline, 0, mline, m.name.name.length),
+          };
+        });
+        result.push({
+          name: stmt.name.name,
+          kind: SymbolKind.Enum,
+          range: Range.create(line, col, line + stmt.members.length + 1, 0),
+          selectionRange: Range.create(line, col, line, col + stmt.name.name.length),
+          children,
+        });
+        break;
+      }
+      case 'InterfaceDeclaration': {
+        result.push({
+          name: stmt.name.name,
+          kind: SymbolKind.Interface,
+          range: Range.create(line, col, line + 1, 0),
+          selectionRange: Range.create(line, col, line, col + stmt.name.name.length),
+        });
+        break;
+      }
+      case 'ExportDeclaration': {
+        // If exported declaration, process the inner declaration
+        if (stmt.declaration) {
+          const inner = stmt.declaration;
+          const iline = inner.loc ? inner.loc.line - 1 : line;
+          if (inner.type === 'FunctionDeclaration') {
+            const params = inner.params.map(p => p.name).join(', ');
+            result.push({
+              name: inner.name.name,
+              detail: `export fn(${params})`,
+              kind: SymbolKind.Function,
+              range: Range.create(iline, 0, iline + inner.body.length + 1, 0),
+              selectionRange: Range.create(iline, 0, iline, inner.name.name.length),
+            });
+          } else if (inner.type === 'ClassDeclaration') {
+            result.push({
+              name: inner.name.name,
+              detail: 'export class',
+              kind: SymbolKind.Class,
+              range: Range.create(iline, 0, iline + inner.body.length + 1, 0),
+              selectionRange: Range.create(iline, 0, iline, inner.name.name.length),
+            });
+          } else if (inner.type === 'VariableDeclaration') {
+            result.push({
+              name: inner.name.name,
+              detail: `export ${inner.kind}`,
+              kind: inner.kind === 'const' ? SymbolKind.Constant : SymbolKind.Variable,
+              range: Range.create(iline, 0, iline, 100),
+              selectionRange: Range.create(iline, 0, iline, inner.name.name.length),
+            });
+          }
+        }
+        break;
+      }
+      case 'ImportDeclaration': {
+        if (stmt.defaultImport) {
+          result.push({
+            name: stmt.defaultImport,
+            detail: `import from "${stmt.source}"`,
+            kind: SymbolKind.Module,
+            range: Range.create(line, 0, line, 100),
+            selectionRange: Range.create(line, 0, line, stmt.defaultImport.length),
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return result;
+});
+
+// ── Start ───────────────────────────────────────────────────────────
+
+documents.listen(connection);
+connection.listen();

@@ -1,0 +1,11 @@
+// Program 7: Three Address Code & Operator Precedence
+make a = 15;
+make b = 4;
+make c = 2;
+make d = 8;
+
+// Demonstrating precedence and temporary variable synthesis
+make result = a + b * c - d / 2;
+
+say("Computed expression a + b * c - d / 2:");
+say(result);

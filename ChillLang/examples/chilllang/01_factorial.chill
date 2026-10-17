@@ -1,0 +1,15 @@
+// Program 1: Factorial Calculation (task, repeat, give, say)
+task factorial(n: Integer): Integer {
+  make result = 1;
+  make i = 1;
+  repeat (i <= n) {
+    result = result * i;
+    i = i + 1;
+  }
+  give result;
+}
+
+make num = 5;
+make fact = factorial(num);
+say("Factorial of 5 is:");
+say(fact);

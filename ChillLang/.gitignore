@@ -1,0 +1,34 @@
+# OS
+*Zone.Identifier
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Build output
+*.tsbuildinfo
+*.vsix
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+
+# Environment
+.env
+.env.local
+
+# Cache
+.nodeon-cache
+
+# Test artifacts
+test-nova-app/
+tmp-*.js

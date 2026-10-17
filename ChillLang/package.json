@@ -1,0 +1,40 @@
+{
+  "name": "chilllang",
+  "version": "1.0.0",
+  "description": "ChillLang Programming Language & Compiler Studio — Full 7-Phase Compiler with Interactive Web Studio",
+  "main": "dist/chilllang-compiler.cjs",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "node scripts/build.js",
+    "build:verify": "node scripts/build.js --verify",
+    "build:bootstrap": "node scripts/build.js --bootstrap",
+    "build:cli": "node scripts/build-cli.js",
+    "build:lsp": "npm run build -w nodeon-vscode-extension",
+    "build:ext": "npm run build -w nodeon-vscode-extension",
+    "build:all": "npm run build && npm run build:ext",
+    "typecheck:lsp": "tsc --noEmit -p packages/language-server/tsconfig.json",
+    "package:ext": "npm run package -w nodeon-vscode-extension"
+  },
+  "license": "MIT",
+  "files": [
+    "dist/**/*",
+    "bin/*",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "bin": {
+    "chill": "./run_chill.js",
+    "chilllang": "./run_chill.js",
+    "chill-cli": "./bin/chilllang-self.js",
+    "chill-ts": "./bin/chilllang.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vitest": "4.1.0",
+    "esbuild": "0.19.12"
+  }
+}

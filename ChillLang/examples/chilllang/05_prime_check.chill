@@ -1,0 +1,29 @@
+// Program 5: Prime Number Checker
+task isPrime(num: Integer): boolean {
+  check (num <= 1) {
+    give false;
+  }
+
+  make divisor = 2;
+  make foundFactor = false;
+
+  repeat (divisor * divisor <= num) {
+    check (num % divisor == 0) {
+      foundFactor = true;
+    }
+    divisor = divisor + 1;
+  }
+
+  check (foundFactor == true) {
+    give false;
+  } otherwise {
+    give true;
+  }
+}
+
+make testNum = 17;
+check (isPrime(testNum) == true) {
+  say("17 is a Prime Number!");
+} otherwise {
+  say("17 is not a prime number.");
+}

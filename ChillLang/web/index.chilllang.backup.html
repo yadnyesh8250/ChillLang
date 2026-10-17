@@ -1,0 +1,1273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChillLang Studio — Multi-Phase Compiler Engineering Workbench</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-canvas: #090c15;
+      --bg-surface: #0f1422;
+      --bg-card: #151b2e;
+      --bg-card-hover: #1c243c;
+      --bg-elevated: #1e2640;
+      
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-light: rgba(255, 255, 255, 0.15);
+      --border-focus: #00f2fe;
+
+      --cyan-500: #00f2fe;
+      --cyan-400: #38bdf8;
+      --purple-500: #a855f7;
+      --indigo-500: #6366f1;
+      --emerald-500: #10b981;
+      --amber-500: #f59e0b;
+      --rose-500: #f43f5e;
+
+      --text-1: #f8fafc;
+      --text-2: #cbd5e1;
+      --text-3: #94a3b8;
+      --text-muted: #64748b;
+
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-canvas);
+      color: var(--text-1);
+      font-family: var(--font-sans);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+
+    /* Top Navigation Bar */
+    .app-header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      height: 56px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      z-index: 20;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      background: linear-gradient(135deg, var(--cyan-500), var(--purple-500));
+      color: #000;
+      font-weight: 800;
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      letter-spacing: 0.08em;
+      box-shadow: 0 0 16px rgba(0, 242, 254, 0.3);
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--text-1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .academic-tag {
+      font-size: 11px;
+      font-weight: 500;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: #a5b4fc;
+      padding: 2px 7px;
+      border-radius: 12px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .preset-dropdown-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .preset-select {
+      background: var(--bg-card);
+      color: var(--text-2);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-family: var(--font-sans);
+      outline: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .preset-select:hover {
+      border-color: var(--border-light);
+      color: var(--text-1);
+    }
+    .preset-select:focus {
+      border-color: var(--cyan-500);
+      box-shadow: 0 0 0 2px rgba(0, 242, 254, 0.15);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+      font-family: var(--font-sans);
+      user-select: none;
+    }
+
+    .btn-compile {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      color: #fff;
+      box-shadow: 0 2px 10px rgba(2, 132, 199, 0.35);
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+    .btn-compile:hover {
+      background: linear-gradient(135deg, #0369a1, #0284c7);
+      box-shadow: 0 4px 16px rgba(2, 132, 199, 0.5);
+      transform: translateY(-1px);
+    }
+    .btn-compile:active { transform: translateY(0); }
+
+    .btn-run {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.35);
+      border-color: rgba(52, 211, 153, 0.3);
+    }
+    .btn-run:hover {
+      background: linear-gradient(135deg, #059669, #10b981);
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.5);
+      transform: translateY(-1px);
+    }
+    .btn-run:active { transform: translateY(0); }
+
+    .btn-ghost {
+      background: var(--bg-card);
+      color: var(--text-2);
+      border-color: var(--border-subtle);
+    }
+    .btn-ghost:hover {
+      background: var(--bg-card-hover);
+      color: var(--text-1);
+      border-color: var(--border-light);
+    }
+
+    .kbd-shortcut {
+      font-size: 10px;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 1px 5px;
+      border-radius: 4px;
+      margin-left: 4px;
+      opacity: 0.8;
+      font-family: var(--font-mono);
+    }
+
+    /* Main Grid */
+    .studio-main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 46% 54%;
+      overflow: hidden;
+      background: var(--bg-canvas);
+    }
+
+    /* Left Panel: Editor */
+    .editor-section {
+      border-right: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .editor-top-bar {
+      height: 38px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .editor-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--bg-surface);
+      padding: 6px 12px;
+      border-radius: 6px 6px 0 0;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--cyan-400);
+      margin-bottom: -1px;
+    }
+
+    .editor-body {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+      background: var(--bg-canvas);
+    }
+
+    .editor-gutter {
+      width: 48px;
+      background: rgba(15, 20, 34, 0.5);
+      border-right: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 22px;
+      padding: 14px 8px;
+      text-align: right;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    .editor-textarea {
+      flex: 1;
+      background: transparent;
+      color: #f1f5f9;
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      line-height: 22px;
+      padding: 14px 16px;
+      border: none;
+      outline: none;
+      resize: none;
+      white-space: pre;
+      overflow: auto;
+      tab-size: 2;
+    }
+
+    /* Right Panel: Compiler Pipeline */
+    .pipeline-section {
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .tabs-strip {
+      height: 42px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: stretch;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .tabs-strip::-webkit-scrollbar { display: none; }
+
+    .phase-tab {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 0 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+    .phase-tab:hover {
+      color: var(--text-2);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .phase-tab.active {
+      color: var(--cyan-500);
+      border-bottom-color: var(--cyan-500);
+      background: rgba(0, 242, 254, 0.04);
+    }
+
+    .counter-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+    }
+    .counter-pill.err { background: rgba(244, 63, 94, 0.2); color: var(--rose-500); }
+    .counter-pill.ok { background: rgba(16, 185, 129, 0.2); color: var(--emerald-500); }
+
+    .phase-panel {
+      flex: 1;
+      overflow: auto;
+      padding: 18px;
+      display: none;
+    }
+    .phase-panel.active { display: block; }
+
+    /* Filter & Controls bar */
+    .filter-bar {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .search-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12.5px;
+      font-family: var(--font-sans);
+      color: var(--text-1);
+      outline: none;
+      width: 220px;
+    }
+    .search-box:focus { border-color: var(--cyan-500); }
+
+    /* Data Tables */
+    .table-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg-card);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+    table.workbench-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      font-family: var(--font-mono);
+      text-align: left;
+    }
+    table.workbench-table th {
+      background: var(--bg-elevated);
+      color: var(--text-3);
+      padding: 9px 14px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-subtle);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+    table.workbench-table td {
+      padding: 8px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-2);
+      white-space: nowrap;
+    }
+    table.workbench-table tr:hover td {
+      background: rgba(0, 242, 254, 0.04);
+      color: var(--text-1);
+    }
+
+    /* Badges */
+    .token-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      letter-spacing: 0.02em;
+    }
+    .badge-kw { background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); color: #93c5fd; }
+    .badge-id { background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.4); color: #d8b4fe; }
+    .badge-op { background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); color: #fde68a; }
+    .badge-delim { background: rgba(100, 116, 139, 0.2); border: 1px solid rgba(100, 116, 139, 0.4); color: #cbd5e1; }
+    .badge-lit { background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: #6ee7b7; }
+    .badge-type { background: rgba(236, 72, 153, 0.2); border: 1px solid rgba(236, 72, 153, 0.4); color: #f472b6; }
+    .badge-err { background: rgba(244, 63, 94, 0.2); border: 1px solid rgba(244, 63, 94, 0.4); color: #fda4af; }
+
+    /* Code Display Containers */
+    pre.code-surface {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 16px;
+      color: #e2e8f0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Optimization Statistics Cards */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .stat-pill-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat-pill-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, var(--cyan-500), var(--purple-500));
+    }
+    .stat-pill-card .digit {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--cyan-400);
+      font-family: var(--font-mono);
+    }
+    .stat-pill-card .caption {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 4px;
+    }
+
+    .diff-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .diff-box h4 {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Diagnostics */
+    .diag-card {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      border: 1px solid transparent;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    }
+    .diag-err {
+      background: rgba(244, 63, 94, 0.08);
+      border-color: rgba(244, 63, 94, 0.35);
+      color: #fecdd3;
+    }
+    .diag-warn {
+      background: rgba(245, 158, 11, 0.08);
+      border-color: rgba(245, 158, 11, 0.35);
+      color: #fef3c7;
+    }
+    .diag-empty-state {
+      padding: 36px;
+      text-align: center;
+      background: rgba(16, 185, 129, 0.04);
+      border: 1px dashed rgba(16, 185, 129, 0.4);
+      border-radius: 8px;
+      color: var(--emerald-500);
+      font-weight: 500;
+    }
+
+    /* Interactive Terminal */
+    .terminal-window {
+      background: #060810;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    }
+    .terminal-header {
+      background: #0f1322;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+    .w-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .w-red { background: #f43f5e; }
+    .w-yellow { background: #f59e0b; }
+    .w-green { background: #10b981; }
+
+    .terminal-content {
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      color: #34d399;
+      min-height: 220px;
+      white-space: pre-wrap;
+    }
+
+    /* Tree View */
+    .ast-tree {
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 16px;
+      overflow: auto;
+    }
+    .ast-row {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      padding: 2px 0;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .ast-indent {
+      display: inline-block;
+      width: 16px;
+      border-left: 1px dashed rgba(255, 255, 255, 0.12);
+      height: 18px;
+    }
+    .ast-type {
+      color: var(--cyan-400);
+      font-weight: 600;
+    }
+    .ast-prop {
+      color: var(--purple-500);
+      font-weight: 500;
+    }
+    .ast-val {
+      color: #fde047;
+    }
+
+    /* Footer status */
+    .app-footer {
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border-subtle);
+      height: 28px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      z-index: 20;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pulse-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--emerald-500);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+    }
+    .pulse-dot.error { background: var(--rose-500); box-shadow: 0 0 8px rgba(244, 63, 94, 0.6); }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 40px;
+      right: 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--cyan-500);
+      color: var(--text-1);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.2s ease;
+      pointer-events: none;
+      z-index: 100;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="app-header">
+    <div class="brand-group">
+      <div class="brand-logo">CHILL</div>
+      <div class="brand-title">
+        ChillLang Studio
+        <span class="academic-tag">Compiler Design (Sem 5)</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div class="preset-dropdown-wrapper">
+        <select id="preset-select" class="preset-select" title="Load sample program">
+          <option value="factorial">Example 1: Factorial (task, repeat, give)</option>
+          <option value="optimization">Example 2: TAC Optimization (Constant Folding & Simplification)</option>
+          <option value="conditionals">Example 3: Multi-Branch Decisions (check, otherwise)</option>
+          <option value="fibonacci">Example 4: Fibonacci Sequence</option>
+          <option value="errors">Example 5: Semantic Diagnostics Demo (re-decl, undefined)</option>
+        </select>
+      </div>
+
+      <button id="btn-compile" class="btn btn-compile" title="Compile program (Ctrl+Enter)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        Compile
+        <span class="kbd-shortcut">⌘↵</span>
+      </button>
+
+      <button id="btn-run" class="btn btn-run" title="Compile and Execute Program">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        Run
+      </button>
+
+      <button id="btn-clear" class="btn btn-ghost" title="Clear Code Editor">
+        Clear
+      </button>
+    </div>
+  </header>
+
+  <!-- Studio Main Split -->
+  <main class="studio-main">
+    <!-- Left: Code Editor -->
+    <section class="editor-section">
+      <div class="editor-top-bar">
+        <div class="editor-tab">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+          main.chill
+        </div>
+        <div id="editor-status" style="font-size: 11.5px;">Lines: 1 | Chars: 0</div>
+      </div>
+
+      <div class="editor-body">
+        <div id="editor-gutter" class="editor-gutter">1</div>
+        <textarea id="code-editor" class="editor-textarea" spellcheck="false" placeholder="// Write ChillLang code here..."></textarea>
+      </div>
+    </section>
+
+    <!-- Right: Compiler Pipeline Inspector -->
+    <section class="pipeline-section">
+      <div class="tabs-strip">
+        <button class="phase-tab active" data-tab="tab-tokens">
+          1. Tokens <span id="pill-tokens" class="counter-pill">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-ast">
+          2 & 3. AST <span id="pill-ast" class="counter-pill">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-symbols">
+          4 & 5. Symbol Table <span id="pill-symbols" class="counter-pill">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-diagnostics">
+          Diagnostics <span id="pill-diag" class="counter-pill ok">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-tac">
+          6. TAC <span id="pill-tac" class="counter-pill">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-opttac">
+          7. Optimized TAC <span id="pill-opttac" class="counter-pill">0</span>
+        </button>
+        <button class="phase-tab" data-tab="tab-js">
+          8. Target JS
+        </button>
+        <button class="phase-tab" data-tab="tab-console">
+          9. Program Output
+        </button>
+      </div>
+
+      <!-- Tab 1: Tokens -->
+      <div id="tab-tokens" class="phase-panel active">
+        <div class="filter-bar">
+          <input type="text" id="token-search" class="search-box" placeholder="Filter tokens or values..." />
+          <span style="font-size: 12px; color: var(--text-muted);">Lexical Scanner Output</span>
+        </div>
+        <div class="table-card">
+          <table class="workbench-table">
+            <thead>
+              <tr>
+                <th style="width: 45px;">#</th>
+                <th style="width: 130px;">Token Type</th>
+                <th>Lexeme / Value</th>
+                <th style="width: 120px;">Position</th>
+              </tr>
+            </thead>
+            <tbody id="tokens-tbody">
+              <tr><td colspan="4" style="text-align:center; color: var(--text-muted); padding: 30px;">Click Compile to generate token stream.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab 2: AST -->
+      <div id="tab-ast" class="phase-panel">
+        <div class="filter-bar">
+          <span style="font-size: 12px; color: var(--text-3);">Syntax Hierarchy (Abstract Syntax Tree)</span>
+          <button id="btn-toggle-ast-json" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11.5px;">Switch to JSON</button>
+        </div>
+        <div id="ast-tree-container" class="ast-tree"></div>
+        <pre id="ast-json-container" class="code-surface" style="display:none;"></pre>
+      </div>
+
+      <!-- Tab 3: Symbol Table -->
+      <div id="tab-symbols" class="phase-panel">
+        <div class="filter-bar">
+          <input type="text" id="symbol-search" class="search-box" placeholder="Filter symbols..." />
+          <span style="font-size: 12px; color: var(--text-muted);">Multi-Scoped Symbol Table</span>
+        </div>
+        <div class="table-card">
+          <table class="workbench-table">
+            <thead>
+              <tr>
+                <th style="width: 40px;">#</th>
+                <th>Identifier</th>
+                <th>Data Type</th>
+                <th>Kind</th>
+                <th>Scope Hierarchy</th>
+                <th>Line</th>
+                <th>Init</th>
+                <th>Refs</th>
+              </tr>
+            </thead>
+            <tbody id="symbols-tbody">
+              <tr><td colspan="8" style="text-align:center; color: var(--text-muted); padding: 30px;">Symbol table empty. Click Compile.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab 4: Diagnostics -->
+      <div id="tab-diagnostics" class="phase-panel">
+        <div id="diagnostics-container">
+          <div class="diag-empty-state">✓ All Lexical, Syntax, and Semantic checks passed cleanly!</div>
+        </div>
+      </div>
+
+      <!-- Tab 5: Three-Address Code -->
+      <div id="tab-tac" class="phase-panel">
+        <div class="filter-bar">
+          <span style="font-size: 12px; color: var(--text-3);">Intermediate Code (Linear Quadruples)</span>
+          <button id="btn-copy-tac" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11.5px;">Copy TAC</button>
+        </div>
+        <pre id="tac-display" class="code-surface">// Three-Address Code will appear here...</pre>
+      </div>
+
+      <!-- Tab 6: Optimized TAC -->
+      <div id="tab-opttac" class="phase-panel">
+        <div class="stats-row">
+          <div class="stat-pill-card">
+            <div id="metric-folds" class="digit">0</div>
+            <div class="caption">Constant Folds</div>
+          </div>
+          <div class="stat-pill-card">
+            <div id="metric-algs" class="digit">0</div>
+            <div class="caption">Algebraic Laws</div>
+          </div>
+          <div class="stat-pill-card">
+            <div id="metric-saved" class="digit">0</div>
+            <div class="caption">Instructions Saved</div>
+          </div>
+          <div class="stat-pill-card">
+            <div id="metric-pct" class="digit">0%</div>
+            <div class="caption">Reduction Rate</div>
+          </div>
+        </div>
+
+        <div class="diff-columns">
+          <div class="diff-box">
+            <h4>
+              <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--amber-500);"></span>
+              Raw Three-Address Code
+            </h4>
+            <pre id="diff-unopt" class="code-surface"></pre>
+          </div>
+          <div class="diff-box">
+            <h4>
+              <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--emerald-500);"></span>
+              Optimized Three-Address Code
+            </h4>
+            <pre id="diff-opt" class="code-surface"></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 7: Target JS -->
+      <div id="tab-js" class="phase-panel">
+        <div class="filter-bar">
+          <span style="font-size: 12px; color: var(--text-3);">Target Code Generation (ECMAScript)</span>
+          <button id="btn-copy-js" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11.5px;">Copy JS</button>
+        </div>
+        <pre id="js-display" class="code-surface">// Target JavaScript will appear here...</pre>
+      </div>
+
+      <!-- Tab 8: Output Console -->
+      <div id="tab-console" class="phase-panel">
+        <div class="filter-bar">
+          <span style="font-size: 12px; color: var(--text-3);">Sandboxed Program Execution Console</span>
+          <button id="btn-clear-console" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11.5px;">Clear Console</button>
+        </div>
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="window-dots">
+              <span class="w-dot w-red"></span>
+              <span class="w-dot w-yellow"></span>
+              <span class="w-dot w-green"></span>
+            </div>
+            <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">chilllang-runner v1.0.0</span>
+          </div>
+          <div id="console-stream" class="terminal-content">// Press 'Run' to compile and execute program...</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <div class="status-item">
+      <span id="compiler-dot" class="pulse-dot"></span>
+      <span id="compiler-status-label">Compiler Ready</span>
+    </div>
+    <div style="display:flex; gap:16px;">
+      <span id="metric-compile-time">0ms</span>
+      <span>UTF-8</span>
+      <span>Spaces: 2</span>
+    </div>
+  </footer>
+
+  <!-- Toast -->
+  <div id="toast">Copied to clipboard!</div>
+
+  <!-- ChillLang Browser Runtime -->
+  <script src="./chilllang.browser.js"></script>
+  <script>
+    const EXAMPLES = {
+      factorial: `// Factorial Calculation (task, repeat, give, say)
+task factorial(n: Integer): Integer {
+  make result = 1;
+  make i = 1;
+  repeat (i <= n) {
+    result = result * i;
+    i = i + 1;
+  }
+  give result;
+}
+
+make num = 5;
+make fact = factorial(num);
+say("Factorial of 5 is:");
+say(fact);`,
+
+      optimization: `// Constant Folding & Algebraic Simplification Demo
+// 1. Constant folding: 100 + 50 * 2 -> 200
+make basePrice = 100 + 50 * 2;
+
+// 2. Algebraic simplification: x * 0 -> 0
+make zeroDiscount = basePrice * 0;
+
+// 3. Algebraic simplification: x + 0 -> x
+make finalPrice = basePrice + 0;
+
+check (finalPrice > 150) {
+  say("Eligible for premium tier:");
+  say(finalPrice);
+} otherwise {
+  say(0);
+}`,
+
+      conditionals: `// Multi-Branch Decisions & Functions
+make score = 88;
+
+task evaluateGrade(marks: Integer): string {
+  check (marks >= 90) {
+    give "Grade A (Outstanding)";
+  } otherwise check (marks >= 80) {
+    give "Grade B (Very Good)";
+  } otherwise check (marks >= 70) {
+    give "Grade C (Good)";
+  } otherwise {
+    give "Grade F (Needs Improvement)";
+  }
+}
+
+make result = evaluateGrade(score);
+say(result);`,
+
+      fibonacci: `// Fibonacci Sequence Generator
+task generateFibonacci(count: Integer) {
+  make a = 0;
+  make b = 1;
+  make index = 0;
+  repeat (index < count) {
+    say(a);
+    make nextVal = a + b;
+    a = b;
+    b = nextVal;
+    index = index + 1;
+  }
+}
+
+say("First 7 Fibonacci numbers:");
+generateFibonacci(7);`,
+
+      errors: `// Semantic Diagnostics & Error Checker Demo
+// Duplicate variable declaration error:
+make balance = 500;
+make balance = 1000;
+
+// Undeclared assignment error:
+missingScore = 95;
+
+// Undefined identifier error:
+say(unregisteredVariable);`
+    };
+
+    const editor = document.getElementById("code-editor");
+    const gutter = document.getElementById("editor-gutter");
+    const editorStatus = document.getElementById("editor-status");
+    const presetSelect = document.getElementById("preset-select");
+    const btnCompile = document.getElementById("btn-compile");
+    const btnRun = document.getElementById("btn-run");
+    const btnClear = document.getElementById("btn-clear");
+
+    const compilerDot = document.getElementById("compiler-dot");
+    const compilerStatusLabel = document.getElementById("compiler-status-label");
+    const metricCompileTime = document.getElementById("metric-compile-time");
+
+    let currentResult = null;
+    let showingAstJson = false;
+
+    // Toast
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1800);
+    }
+
+    // Sync line numbers
+    function updateEditorGutter() {
+      const lines = editor.value.split("\n").length;
+      gutter.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
+      editorStatus.textContent = `Lines: ${lines} | Chars: ${editor.value.length}`;
+    }
+
+    editor.addEventListener("input", updateEditorGutter);
+    editor.addEventListener("scroll", () => {
+      gutter.scrollTop = editor.scrollTop;
+    });
+
+    // Keyboard navigation
+    editor.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        compileCode(false);
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        editor.value = editor.value.substring(0, start) + "  " + editor.value.substring(end);
+        editor.selectionStart = editor.selectionEnd = start + 2;
+        updateEditorGutter();
+      }
+    });
+
+    // Tabs switching
+    document.querySelectorAll(".phase-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".phase-tab").forEach((t) => t.classList.remove("active"));
+        document.querySelectorAll(".phase-panel").forEach((p) => p.classList.remove("active"));
+        tab.classList.add("active");
+        const panelId = tab.getAttribute("data-tab");
+        document.getElementById(panelId).classList.add("active");
+      });
+    });
+
+    // Presets
+    presetSelect.addEventListener("change", () => {
+      const key = presetSelect.value;
+      if (EXAMPLES[key]) {
+        editor.value = EXAMPLES[key].trim();
+        updateEditorGutter();
+        compileCode(false);
+      }
+    });
+
+    btnClear.addEventListener("click", () => {
+      editor.value = "";
+      updateEditorGutter();
+    });
+
+    // Copy actions
+    document.getElementById("btn-copy-tac").addEventListener("click", () => {
+      if (currentResult?.tacText) {
+        navigator.clipboard.writeText(currentResult.tacText);
+        showToast("Three-Address Code copied!");
+      }
+    });
+
+    document.getElementById("btn-copy-js").addEventListener("click", () => {
+      if (currentResult?.js) {
+        navigator.clipboard.writeText(currentResult.js);
+        showToast("Target JavaScript copied!");
+      }
+    });
+
+    document.getElementById("btn-clear-console").addEventListener("click", () => {
+      document.getElementById("console-stream").textContent = "";
+    });
+
+    // AST view toggle
+    document.getElementById("btn-toggle-ast-json").addEventListener("click", () => {
+      showingAstJson = !showingAstJson;
+      document.getElementById("ast-tree-container").style.display = showingAstJson ? "none" : "block";
+      document.getElementById("ast-json-container").style.display = showingAstJson ? "block" : "none";
+      document.getElementById("btn-toggle-ast-json").textContent = showingAstJson ? "Switch to Tree" : "Switch to JSON";
+    });
+
+    // Filtering
+    document.getElementById("token-search").addEventListener("input", (e) => {
+      renderTokensTable(currentResult?.tokens || [], e.target.value.toLowerCase());
+    });
+
+    document.getElementById("symbol-search").addEventListener("input", (e) => {
+      renderSymbolsTable(currentResult?.symbolTable || [], e.target.value.toLowerCase());
+    });
+
+    // Main Compilation Trigger
+    function compileCode(execute = false) {
+      if (!window.ChillLang || !window.ChillLang.compile) {
+        alert("ChillLang compiler runtime failed to load.");
+        return;
+      }
+
+      const res = window.ChillLang.compile(editor.value, { run: execute });
+      currentResult = res;
+
+      // Update status
+      metricCompileTime.textContent = `${res.elapsedTimeMs}ms`;
+      if (res.success) {
+        compilerDot.className = "pulse-dot";
+        compilerStatusLabel.textContent = "Compilation Successful";
+      } else {
+        compilerDot.className = "pulse-dot error";
+        compilerStatusLabel.textContent = "Compilation Errors";
+      }
+
+      // Update pills
+      document.getElementById("pill-tokens").textContent = res.tokens.length;
+      document.getElementById("pill-ast").textContent = res.ast?.body ? `${res.ast.body.length}` : "0";
+      document.getElementById("pill-symbols").textContent = res.symbolTable.length;
+      document.getElementById("pill-tac").textContent = `${res.tac.length}`;
+      document.getElementById("pill-opttac").textContent = `${res.optimizedTac.length}`;
+
+      const errs = res.diagnostics.filter((d) => d.severity === "error").length;
+      const diagPill = document.getElementById("pill-diag");
+      diagPill.textContent = res.diagnostics.length;
+      diagPill.className = errs > 0 ? "counter-pill err" : "counter-pill ok";
+
+      // Render phases
+      renderTokensTable(res.tokens);
+      renderAST(res.ast);
+      renderSymbolsTable(res.symbolTable);
+      renderDiagnostics(res.diagnostics);
+
+      document.getElementById("tac-display").textContent = res.tacText || "// No TAC";
+      renderOptimizationDiff(res);
+      document.getElementById("js-display").textContent = res.js || "// No Target JS";
+
+      if (execute && res.execution) {
+        const stream = document.getElementById("console-stream");
+        stream.textContent = `[Compiled in ${res.elapsedTimeMs}ms]\n\n${res.execution.output || "[Program terminated cleanly with no stdout]"}`;
+        document.querySelector('[data-tab="tab-console"]').click();
+      }
+    }
+
+    function renderTokensTable(tokens, query = "") {
+      const tbody = document.getElementById("tokens-tbody");
+      const filtered = query
+        ? tokens.filter((t) => t.type.toLowerCase().includes(query) || String(t.value).toLowerCase().includes(query))
+        : tokens;
+
+      if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:24px;">No matching tokens found.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((t) => {
+        let cls = "badge-lit";
+        if (t.type === "KEYWORD") cls = "badge-kw";
+        else if (t.type === "IDENTIFIER") cls = "badge-id";
+        else if (t.type === "OPERATOR") cls = "badge-op";
+        else if (t.type === "DELIMITER") cls = "badge-delim";
+        else if (t.type === "TYPE") cls = "badge-type";
+        else if (t.type === "ERROR") cls = "badge-err";
+
+        return `<tr>
+          <td style="color:var(--text-muted);">${t.index}</td>
+          <td><span class="token-badge ${cls}">${t.type}</span></td>
+          <td style="color:#38bdf8;">${escapeHtml(JSON.stringify(t.value))}</td>
+          <td style="color:var(--text-muted);">Line ${t.line}:${t.column}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderAST(ast) {
+      document.getElementById("ast-json-container").textContent = JSON.stringify(ast, null, 2);
+      const container = document.getElementById("ast-tree-container");
+      container.innerHTML = generateTreeHTML(ast);
+    }
+
+    function generateTreeHTML(node, indent = 0) {
+      if (!node || typeof node !== "object") {
+        return `<span class="ast-val">${escapeHtml(String(node))}</span>`;
+      }
+      if (Array.isArray(node)) {
+        return node.map((item) => generateTreeHTML(item, indent)).join("");
+      }
+
+      const indents = Array.from({ length: indent }, () => `<span class="ast-indent"></span>`).join("");
+      let html = `<div class="ast-row">${indents}<span class="ast-type">${node.type || "Node"}</span>`;
+
+      const keys = Object.keys(node).filter((k) => k !== "loc" && k !== "type");
+      const simpleProps = [];
+      const complexProps = [];
+
+      for (const k of keys) {
+        if (node[k] && typeof node[k] === "object") {
+          complexProps.push(k);
+        } else {
+          simpleProps.push(`${k}: <span class="ast-val">${escapeHtml(JSON.stringify(node[k]))}</span>`);
+        }
+      }
+
+      if (simpleProps.length) {
+        html += ` <span style="color:var(--text-muted);">(${simpleProps.join(", ")})</span>`;
+      }
+      html += `</div>`;
+
+      for (const cp of complexProps) {
+        html += `<div class="ast-row">${indents}<span class="ast-indent"></span><span class="ast-prop">${cp} ➔</span></div>`;
+        html += generateTreeHTML(node[cp], indent + 2);
+      }
+
+      return html;
+    }
+
+    function renderSymbolsTable(symbols, query = "") {
+      const tbody = document.getElementById("symbols-tbody");
+      const filtered = query
+        ? symbols.filter((s) => s.name.toLowerCase().includes(query) || s.type.toLowerCase().includes(query) || s.kind.toLowerCase().includes(query))
+        : symbols;
+
+      if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">No symbols match filter.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((s) => `<tr>
+        <td style="color:var(--text-muted);">${s.index}</td>
+        <td style="color:var(--cyan-400); font-weight:600;">${escapeHtml(s.name)}</td>
+        <td style="color:#e2e8f0;">${escapeHtml(s.type)}</td>
+        <td><span class="token-badge ${s.kind === 'task' ? 'badge-kw' : 'badge-id'}">${s.kind}</span></td>
+        <td style="color:var(--text-muted);">${escapeHtml(s.scope)}</td>
+        <td style="color:var(--text-muted);">${s.line}</td>
+        <td>${s.initialized}</td>
+        <td style="color:var(--text-muted);">${s.references}</td>
+      </tr>`).join("");
+    }
+
+    function renderDiagnostics(diagnostics) {
+      const container = document.getElementById("diagnostics-container");
+      if (!diagnostics || !diagnostics.length) {
+        container.innerHTML = `<div class="diag-empty-state">✓ All Lexical, Syntax, and Semantic checks passed cleanly! Zero errors detected.</div>`;
+        return;
+      }
+
+      container.innerHTML = diagnostics.map((d) => {
+        const isErr = d.severity === "error";
+        return `<div class="diag-card ${isErr ? 'diag-err' : 'diag-warn'}">
+          <span class="token-badge ${isErr ? 'badge-err' : 'badge-op'}">${d.phase || 'Diagnostic'}</span>
+          <div>
+            <strong>[Line ${d.line}:${d.column}]</strong> ${escapeHtml(d.message)}
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    function renderOptimizationDiff(res) {
+      const stats = res.optimizationStats || {};
+      document.getElementById("metric-folds").textContent = stats.constantFolds || 0;
+      document.getElementById("metric-algs").textContent = stats.algebraicSimplifications || 0;
+      const saved = (stats.instructionsBefore || 0) - (stats.instructionsAfter || 0);
+      document.getElementById("metric-saved").textContent = saved > 0 ? saved : 0;
+      const pct = stats.instructionsBefore ? Math.round((saved / stats.instructionsBefore) * 100) : 0;
+      document.getElementById("metric-pct").textContent = `${pct > 0 ? pct : 0}%`;
+
+      document.getElementById("diff-unopt").textContent = res.tacText || "// No TAC";
+      document.getElementById("diff-opt").textContent = res.optimizedTacText || "// No Optimized TAC";
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    btnCompile.addEventListener("click", () => compileCode(false));
+    btnRun.addEventListener("click", () => compileCode(true));
+
+    // Initial setup with Factorial
+    presetSelect.value = "factorial";
+    editor.value = EXAMPLES.factorial.trim();
+    updateEditorGutter();
+    compileCode(false);
+  </script>
+</body>
+</html>

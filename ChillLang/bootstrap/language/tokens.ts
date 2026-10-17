@@ -1,0 +1,26 @@
+export enum TokenType {
+  Identifier = "Identifier",
+  Number = "Number",
+  String = "String",
+  RawString = "RawString",
+  TemplateLiteral = "TemplateLiteral",
+  RegExp = "RegExp",
+  Keyword = "Keyword",
+  Operator = "Operator",
+  Delimiter = "Delimiter",
+  Decorator = "Decorator",
+  EOF = "EOF",
+}
+
+export interface SourceLocation {
+  line: number;
+  column: number;
+  offset: number;
+}
+
+export interface Token {
+  type: TokenType;
+  value: string;
+  position: number;
+  loc: SourceLocation;
+}

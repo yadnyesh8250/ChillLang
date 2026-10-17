@@ -1,0 +1,18 @@
+// Program 4: Constant Folding & Algebraic Simplification Demo
+
+// 1. Constant folding: 100 + 50 * 2 -> 200
+make basePrice = 100 + 50 * 2;
+
+// 2. Algebraic simplification: x * 0 -> 0
+make zeroDiscount = basePrice * 0;
+
+// 3. Algebraic simplification: x + 0 -> x
+make finalPrice = basePrice + 0;
+
+check (finalPrice > 150) {
+  say("Eligible for premium tier:");
+  say(finalPrice);
+} otherwise {
+  say("Standard tier:");
+  say(finalPrice);
+}

@@ -1,0 +1,173 @@
+import { Token, TokenType } from "@language/tokens";
+import { Identifier } from "@ast/nodes";
+import { NodeonError, ErrorCode } from "@compiler/errors";
+
+// Contextual keywords: can be used as identifiers in most positions
+const CONTEXTUAL_KW = ["print", "say", "make", "check", "otherwise", "repeat", "task", "give", "from", "async", "of", "get", "set", "static", "default", "as", "type", "enum", "interface", "implements"];
+
+/**
+ * Base class for the Parser — handles token navigation and consumption.
+ * Subclassed by Parser which adds all statement/expression parsing.
+ */
+export class ParserBase {
+  protected tokens: Token[] = [];
+  protected current = 0;
+  protected source: string | null = null;
+  protected sourceLines: string[] = [];
+
+  constructor(tokens: Token[], source?: string) {
+    this.tokens = tokens;
+    this.source = source ?? null;
+    this.sourceLines = source ? source.split("\n") : [];
+  }
+
+  // ── Token Navigation ──────────────────────────────────────────
+
+  protected advance(): Token {
+    if (!this.isAtEnd()) this.current++;
+    return this.previous();
+  }
+
+  protected peek(): Token {
+    return this.tokens[this.current];
+  }
+
+  protected peekNext(): Token | undefined {
+    return this.tokens[this.current + 1];
+  }
+
+  protected peekAt(offset: number): Token | undefined {
+    return this.tokens[this.current + offset];
+  }
+
+  protected previous(): Token {
+    return this.tokens[this.current - 1];
+  }
+
+  protected isAtEnd(): boolean {
+    return this.peek().type === TokenType.EOF;
+  }
+
+  // ── Token Checks ──────────────────────────────────────────────
+
+  protected checkKeyword(value: string): boolean {
+    const tok = this.peek();
+    return tok.type === TokenType.Keyword && tok.value === value;
+  }
+
+  protected checkContextualKeyword(value: string): boolean {
+    const tok = this.peek();
+    return tok.type === TokenType.Identifier && tok.value === value;
+  }
+
+  protected consumeContextualKeyword(value: string): void {
+    const tok = this.peek();
+    if (tok.type === TokenType.Identifier && tok.value === value) {
+      this.advance();
+      return;
+    }
+    this.error(tok, `Expected '${value}'`);
+  }
+
+  protected checkOperator(value: string): boolean {
+    const tok = this.peek();
+    return tok.type === TokenType.Operator && tok.value === value;
+  }
+
+  protected checkExactOperator(value: string): boolean {
+    const tok = this.peek();
+    return tok.type === TokenType.Operator && tok.value === value;
+  }
+
+  protected checkDelimiter(value: string): boolean {
+    const tok = this.peek();
+    return tok.type === TokenType.Delimiter && tok.value === value;
+  }
+
+  // ── Token Consumption ─────────────────────────────────────────
+
+  protected consumeKeyword(value: string): void {
+    const tok = this.peek();
+    if (tok.type === TokenType.Keyword && tok.value === value) {
+      this.advance();
+      return;
+    }
+    this.error(tok, `Expected keyword '${value}'`);
+  }
+
+  protected consumeIdentifier(message: string): Identifier {
+    const tok = this.peek();
+    if (tok.type === TokenType.Identifier) {
+      this.advance();
+      return { type: "Identifier", name: tok.value };
+    }
+    // Allow contextual keywords to be used as identifiers in certain contexts
+    // (e.g., variable names, parameter names, property keys)
+    if (tok.type === TokenType.Keyword && CONTEXTUAL_KW.includes(tok.value)) {
+      this.advance();
+      return { type: "Identifier", name: tok.value };
+    }
+    this.error(tok, message);
+  }
+
+  protected consumePropertyName(message: string): Identifier {
+    const tok = this.peek();
+    if (tok.type === TokenType.Identifier || tok.type === TokenType.Keyword) {
+      this.advance();
+      return { type: "Identifier", name: tok.value };
+    }
+    this.error(tok, message);
+  }
+
+  protected consumeDelimiter(value: string, message: string): void {
+    const tok = this.peek();
+    if (tok.type === TokenType.Delimiter && tok.value === value) {
+      this.advance();
+      return;
+    }
+    this.error(tok, message);
+  }
+
+  protected consumeOperator(value: string, message: string): void {
+    const tok = this.peek();
+    if (tok.type === TokenType.Operator && tok.value === value) {
+      this.advance();
+      return;
+    }
+    this.error(tok, message);
+  }
+
+  protected matchDelimiter(value: string): boolean {
+    const tok = this.peek();
+    if (tok.type === TokenType.Delimiter && tok.value === value) {
+      this.advance();
+      return true;
+    }
+    return false;
+  }
+
+  // ── Utilities ─────────────────────────────────────────────────────
+
+  protected isIdentifierLike(tok: Token): boolean {
+    return tok.type === TokenType.Identifier ||
+      (tok.type === TokenType.Keyword && CONTEXTUAL_KW.includes(tok.value));
+  }
+
+  // ── Error Reporting ─────────────────────────────────────────────────
+
+  protected error(token: Token, message: string): never {
+    const loc = token.loc;
+    // Infer error code from message pattern
+    let code = ErrorCode.E0100;
+    if (message.startsWith("Expected '") || message.startsWith("Expected \"")) code = ErrorCode.E0101;
+    else if (message.includes("Expected expression")) code = ErrorCode.E0105;
+    else if (message.includes("Expected") && message.includes("name")) code = ErrorCode.E0107;
+    else if (message.includes("Expected '{'")) code = ErrorCode.E0108;
+
+    if (loc) {
+      const sourceLine = this.sourceLines[loc.line - 1] ?? undefined;
+      throw new NodeonError(code, message, loc.line, loc.column, sourceLine);
+    }
+    throw new NodeonError(code, message, 0, 0);
+  }
+}

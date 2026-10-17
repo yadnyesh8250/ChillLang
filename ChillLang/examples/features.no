@@ -1,0 +1,163 @@
+// ──────────────────────────────────────────────────────────
+// Nodeon Feature Showcase: tests all major language features
+// ──────────────────────────────────────────────────────────
+
+// ── Variables with different declaration styles ───────────
+x = 42
+const PI = 3.14159
+let name = "Nodeon"
+
+// ── Hex, binary, octal number literals ────────────────────
+hex = 0xFF
+bin = 0b1010
+oct = 0o77
+
+// ── JS-style comments also work ──────────────────────────
+// This is a JS-style line comment
+/* This is a block comment */
+
+// ── Switch statement ──────────────────────────────────────
+color = "red"
+switch color {
+  case "red" {
+    print("Stop!")
+  }
+  case "green" {
+    print("Go!")
+  }
+  default {
+    print("Unknown color")
+  }
+}
+
+// ── Do-while loop ────────────────────────────────────────
+n = 5
+do {
+  n = n - 1
+} while n > 0
+
+// ── Compound assignment operators ─────────────────────────
+counter = 0
+counter += 10
+counter -= 3
+counter *= 2
+
+// ── Ternary expression ───────────────────────────────────
+status = counter > 10 ? "high" : "low"
+print("Counter status: {status}")
+
+// ── typeof ────────────────────────────────────────────────
+print(typeof x)
+
+// ── Optional chaining ────────────────────────────────────
+config = { db: { host: "localhost" } }
+port = config.db?.port
+print("Port: {port}")
+
+// ── Nullish coalescing ───────────────────────────────────
+fallback = port ?? 3000
+print("Using port: {fallback}")
+
+// ── Try/catch/finally ────────────────────────────────────
+try {
+  result = JSON.parse('{"ok": true}')
+  // Single-quoted strings don't interpolate, so {"ok": true} is literal
+  print("Parsed: {result.ok}")
+} catch (err) {
+  print("Error: {err}")
+} finally {
+  print("Cleanup done")
+}
+
+// ── Break and continue ───────────────────────────────────
+for i in 0..10 {
+  if i == 3 {
+    continue
+  }
+  if i == 7 {
+    break
+  }
+  print(i)
+}
+
+// ── Strict equality (=== in JS) ──────────────────────────
+a = "5"
+b = 5
+if a == b {
+  print("equal")
+} else {
+  print("not equal (=== comparison)")
+}
+
+// ── Backtick template literals ────────────────────────────
+greeting = `Hello ${name}, you have ${counter} items`
+print(greeting)
+
+// ── Destructuring ───────────────────────────────────────
+const { host, port } = config.db
+print("Host: {host}")
+
+let [first, second, ...rest] = [1, 2, 3, 4, 5]
+print("First: {first}, Rest: {rest}")
+
+// ── Type Annotations (stripped in JS output) ────────────
+let count: number = 42
+const label: string = "items"
+
+fn add(a: number, b: number): number {
+  return a + b
+}
+print("Sum: {add(count, 8)}")
+
+// ── Pattern Matching ────────────────────────────────────
+match color {
+  case "red" {
+    print("Match: Stop!")
+  }
+  case "green" {
+    print("Match: Go!")
+  }
+  default {
+    print("Match: Unknown")
+  }
+}
+
+// ── Match with guard clauses ────────────────────────────
+let score = 85
+match score {
+  case 100 {
+    print("Perfect!")
+  }
+  case 90 if score > 89 {
+    print("Excellent")
+  }
+  default {
+    print("Score: {score}")
+  }
+}
+
+// ── Enums ───────────────────────────────────────────────
+enum Color { Red, Green, Blue }
+print("Red = {Color.Red}")
+
+enum Status { OK = 200, NotFound = 404, Error = 500 }
+print("OK = {Status.OK}")
+
+// ── Pipe Operator ───────────────────────────────────────
+fn double(x) { return x * 2 }
+fn increment(x) { return x + 1 }
+
+let result = 5 |> double |> increment
+print("5 |> double |> increment = {result}")
+
+// ── Interfaces (type-only, stripped from JS) ────────────
+interface Shape {
+  area(): number,
+  perimeter(): number
+}
+
+interface User {
+  name: string,
+  age: number,
+  email?: string
+}

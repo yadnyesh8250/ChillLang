@@ -1,0 +1,15 @@
+import mongodb from "mongodb"
+
+fn greet(name) {
+    print("Hello {name}")
+}
+
+greet("Ismael")
+
+
+
+x: string | number = 'asdf'
+x = 3
+print("x = {x}")
+let y: string = "hello"
+print("y = {y}")

@@ -1,0 +1,167 @@
+import { NodeonError, ErrorCode } from "../errors.no"
+
+// Contextual keywords: can be used as identifiers in most positions
+const CONTEXTUAL_KW = ["print", "from", "async", "of", "get", "set", "static", "default", "as", "type", "enum", "interface", "implements"]
+
+// Base class for the Parser — handles token navigation and consumption.
+// Subclassed by Parser which adds all statement/expression parsing.
+export class ParserBase {
+  constructor(tokens, source) {
+    this.tokens = tokens
+    this.current = 0
+    this.source = source ?? null
+    this.sourceLines = source ? source.split("\n") : []
+  }
+
+  // ── Token Navigation ──────────────────────────────────────────
+
+  fn advance() {
+    if !this.isAtEnd() { this.current = this.current + 1 }
+    return this.previous()
+  }
+
+  fn peek() {
+    return this.tokens[this.current]
+  }
+
+  fn peekNext() {
+    return this.tokens[this.current + 1]
+  }
+
+  fn peekAt(offset) {
+    return this.tokens[this.current + offset]
+  }
+
+  fn previous() {
+    return this.tokens[this.current - 1]
+  }
+
+  fn isAtEnd() {
+    return this.peek().type == "EOF"
+  }
+
+  // ── Token Checks ──────────────────────────────────────────────
+
+  fn checkKeyword(value) {
+    const tok = this.peek()
+    return tok.type == "Keyword" && tok.value == value
+  }
+
+  fn checkContextualKeyword(value) {
+    const tok = this.peek()
+    return tok.type == "Identifier" && tok.value == value
+  }
+
+  fn consumeContextualKeyword(value) {
+    const tok = this.peek()
+    if tok.type == "Identifier" && tok.value == value {
+      this.advance()
+      return
+    }
+    this.error(tok, "Expected '{value}'")
+  }
+
+  fn checkOperator(value) {
+    const tok = this.peek()
+    return tok.type == "Operator" && tok.value == value
+  }
+
+  fn checkDelimiter(value) {
+    const tok = this.peek()
+    return tok.type == "Delimiter" && tok.value == value
+  }
+
+  // ── Token Consumption ─────────────────────────────────────────
+
+  fn consumeKeyword(value) {
+    const tok = this.peek()
+    if tok.type == "Keyword" && tok.value == value {
+      this.advance()
+      return
+    }
+    this.error(tok, "Expected keyword '{value}'")
+  }
+
+  fn consumeIdentifier(message) {
+    const tok = this.peek()
+    if tok.type == "Identifier" {
+      this.advance()
+      return { type: "Identifier", name: tok.value }
+    }
+    // Allow contextual keywords to be used as identifiers in certain contexts
+    // (e.g., variable names, parameter names, property keys)
+    if tok.type == "Keyword" && CONTEXTUAL_KW.includes(tok.value) {
+      this.advance()
+      return { type: "Identifier", name: tok.value }
+    }
+    this.error(tok, message)
+  }
+
+  fn consumePropertyName(message) {
+    const tok = this.peek()
+    if tok.type == "Identifier" || tok.type == "Keyword" {
+      this.advance()
+      return { type: "Identifier", name: tok.value }
+    }
+    this.error(tok, message)
+  }
+
+  fn consumeDelimiter(value, message) {
+    const tok = this.peek()
+    if tok.type == "Delimiter" && tok.value == value {
+      this.advance()
+      return
+    }
+    this.error(tok, message)
+  }
+
+  fn consumeOperator(value, message) {
+    const tok = this.peek()
+    if tok.type == "Operator" && tok.value == value {
+      this.advance()
+      return
+    }
+    this.error(tok, message)
+  }
+
+  fn matchDelimiter(value) {
+    const tok = this.peek()
+    if tok.type == "Delimiter" && tok.value == value {
+      this.advance()
+      return true
+    }
+    return false
+  }
+
+  // ── Error Reporting ───────────────────────────────────────────
+
+  fn isIdentifierLike(tok) {
+    if tok.type == "Identifier" { return true }
+    if tok.type == "Keyword" && CONTEXTUAL_KW.includes(tok.value) { return true }
+    return false
+  }
+
+  fn error(token, message, code) {
+    const loc = token.loc
+    let errCode = code ?? null
+    if !errCode {
+      // Infer error code from message pattern
+      if message.startsWith("Expected '") || message.startsWith('Expected "') {
+        errCode = ErrorCode.E0101
+      } else if message.includes("Expected expression") {
+        errCode = ErrorCode.E0105
+      } else if message.includes("Expected") && message.includes("name") {
+        errCode = ErrorCode.E0107
+      } else if message.includes("Expected '\{'") {
+        errCode = ErrorCode.E0108
+      } else {
+        errCode = ErrorCode.E0100
+      }
+    }
+    if loc {
+      const sourceLine = this.sourceLines[loc.line - 1] ?? null
+      throw new NodeonError(errCode, message, loc.line, loc.column, sourceLine)
+    }
+    throw new NodeonError(errCode, message, 0, 0, null)
+  }
+}

@@ -1,0 +1,18 @@
+// Program 3: Multi-Branch Decisions & Functions
+make score = 88;
+
+task evaluateGrade(marks: Integer): string {
+  check (marks >= 90) {
+    give "Grade A (Outstanding)";
+  } otherwise check (marks >= 80) {
+    give "Grade B (Very Good)";
+  } otherwise check (marks >= 70) {
+    give "Grade C (Good)";
+  } otherwise {
+    give "Grade F (Needs Improvement)";
+  }
+}
+
+make result = evaluateGrade(score);
+say("Evaluation for score 88:");
+say(result);

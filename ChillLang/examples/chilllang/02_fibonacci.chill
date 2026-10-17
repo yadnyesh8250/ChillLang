@@ -1,0 +1,16 @@
+// Program 2: Fibonacci Sequence Generator
+task generateFibonacci(count: Integer) {
+  make a = 0;
+  make b = 1;
+  make index = 0;
+  say("First 7 Fibonacci numbers:");
+  repeat (index < count) {
+    say(a);
+    make nextVal = a + b;
+    a = b;
+    b = nextVal;
+    index = index + 1;
+  }
+}
+
+generateFibonacci(7);
