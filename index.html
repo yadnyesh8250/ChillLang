@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="0; url=./ChillLang/web/index.html">
+  <title>ChillLang Studio — Launching Compiler Workbench</title>
+  <script>
+    window.location.replace("./ChillLang/web/index.html");
+  </script>
+  <style>
+    body {
+      background: #0e1511;
+      color: #6afebb;
+      font-family: 'JetBrains Mono', monospace, courier;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      text-align: center;
+    }
+    .spinner {
+      font-size: 24px;
+      margin-bottom: 12px;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    a {
+      color: #9fe2bf;
+      text-decoration: underline;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="spinner">🧊 CHILLLANG COMPILER STUDIO</div>
+  <div>Initializing Workbench & Pipeline...</div>
+  <a href="./ChillLang/web/index.html">Click here if not redirected automatically</a>
+</body>
+</html>

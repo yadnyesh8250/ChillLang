@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/", "destination": "/ChillLang/web/index.html" },
+    { "source": "/chilllang.browser.js", "destination": "/ChillLang/web/chilllang.browser.js" },
+    { "source": "/web/(.*)", "destination": "/ChillLang/web/$1" }
+  ]
+}
